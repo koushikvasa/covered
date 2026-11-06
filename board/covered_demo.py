@@ -20,7 +20,6 @@ async def run_covered_demo(broadcast) -> None:
 
     importlib.reload(my_agent)
     a = my_agent.MyAgent()
-    a.phone_hint = "alex"
     await asyncio.sleep(2.5)
 
     async def say(role: str, text: str, pause: float = 1.7) -> None:
@@ -38,17 +37,19 @@ async def run_covered_demo(broadcast) -> None:
     await broadcast({"type": "call_started", "call": a.call_id, "t": time.time()})
     await say(
         "assistant",
-        "Hi, this is Covered, your health plan's care line. Am I speaking with Alex?",
+        "Hi, this is Covered, your health plan's care line. "
+        "Can I get your name and what you're calling about today?",
     )
-    await say("user", "Yeah, Alex Johnson.")
+    await say("user", "It's Alex Johnson. My knee's been killing me for weeks.")
     await say(
-        "assistant", "Thanks Alex. To protect your account, what's your date of birth?"
+        "assistant",
+        "Sorry to hear that, Alex. To protect your account, what's your insurance ID?",
     )
-    await say("user", "April twelfth, nineteen ninety.")
-    await a.verify_identity(None, "Alex Johnson", "1990-04-12")
-    await say("assistant", "You're verified. What kind of care do you need today?")
-    await say("user", "My knee's been killing me for weeks.")
-    await a.find_care(None, "orthopedics", "knee pain")
+    await say("user", "M B R one two three four five.")
+    await a.verify_identity(None, "Alex Johnson", "MBR-12345")
+    await say("assistant", "You're verified. What ZIP code do you want care in?")
+    await say("user", "Oh seven three oh two.")
+    await a.find_care(None, "orthopedics", "knee pain", "07302")
     await say(
         "assistant",
         "Your plan needs a referral from Dr. Lee first. Want me to request it?",
@@ -63,7 +64,7 @@ async def run_covered_demo(broadcast) -> None:
     first = a.offers["A"]
     await say(
         "assistant",
-        f"{first['name']}, {first['miles']} miles away, about {first['cost']} dollars. Or another option. Which one?",
+        f"{first['name']} is close by, about {first['cost']} dollars. Or another option. Which one?",
     )
     await say("user", "Hold on one sec.")
     await a.hold_on(None)

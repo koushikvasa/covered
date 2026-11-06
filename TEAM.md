@@ -25,14 +25,13 @@ uv run board/server.py --demo    # open http://localhost:8787, watch a scripted 
 ## Person A — Voice & phone  (branch `feat/voice`)
 Owns: `src/my_agent.py`, `src/agent.py`, `src/models.py`, phone setup.
 
-- [ ] **4:40** `lk agent console`: run the happy path ("Hi, I'm Alex Johnson, born April twelfth nineteen ninety, I need a therapist"). Fix anything that breaks.
+- [ ] **4:40** `lk agent console`: run the happy path ("Hi, I'm Alex Johnson, I need a therapist", then ID MBR-12345, April twelfth nineteen ninety, ZIP 07302). Fix anything that breaks.
 - [ ] **4:50** Rent the number + dispatch rule (README section 4). `AGENT_NAME` must match `dispatch-rule.json`.
 - [ ] **5:00 ✅ milestone:** happy path works in console.
 - [ ] **5:00–5:45** Tune with `lk agent debugger`: replies under ~15 words, one question per turn, read-back before every booking. Try `MODEL_PRESET=quality` once if the budget LLM ignores tool instructions.
 - [ ] **5:45** `lk agent dev --deployment production`, call the number from your phone.
 - [ ] **6:00 ✅ milestone:** real phone call books an appointment.
 - [ ] **6:00–6:40** Run `scenarios-covered.yaml` one scenario at a time; fix failures in the prompt or tool docstrings.
-- [ ] **6:40** Add `COVERED_DEMO_PHONES=<your number>=alex` so the demo phone is recognised by caller ID.
 
 ## Person B — Board, data & demo  (branch `feat/board`)
 Owns: `board/`, `src/covered_core.py` (data only), `scenarios-covered.yaml`, `COVERED.md`, the pitch.

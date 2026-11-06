@@ -143,7 +143,7 @@ const on = {
     $("#stats").style.display="flex"; $("#sBook").textContent=e.offers.length; $("#sGhost").textContent=e.ghosts.length;
     $("#sCost").textContent = e.offers.length ? "$"+Math.min(...e.offers.map(o=>o.cost)) : "—";
     const rows = e.offers.map((o,i)=>`<div class="prov"><div class="tag">${"AB"[i]}</div><div><div class="pname">${esc(o.name)}</div>
-        <div class="pmeta">${mi(o.miles)} · ${esc(when(o.slot))} · Tier ${o.tier}</div></div><div class="cost"><b>$${o.cost}</b><small>your cost</small></div></div>`)
+        <div class="pmeta">${o.live ? `${esc(o.address)} · live registry · office sets the time` : `${mi(o.miles)} · ${esc(when(o.slot))} · Tier ${o.tier}`}</div></div><div class="cost"><b>$${o.cost}</b><small>${o.live ? "if in-network" : "your cost"}</small></div></div>`)
       .concat(e.ghosts.map(g=>`<div class="prov ghost"><div class="tag">✕</div><div><div class="pname">${esc(g.name)}</div>
         <div class="pmeta">Listed in directory · ${esc(g.reason)}</div></div><span class="badge b-bad">Ghost · not offered</span></div>`))
       .concat(e.no_match.map(g=>`<div class="prov nomatch"><div class="tag">–</div><div><div class="pname">${esc(g.name)}</div>
@@ -151,16 +151,17 @@ const on = {
     $("#results").innerHTML = rows.join("") || '<div class="empty">No in-network openings match</div>';
     e.ghosts.forEach(g=>{ if(!ghostsSeen.has(g.id)){ ghostsSeen.add(g.id); alertBox("info","Ghost listing reported", `${g.name}: ${g.reason}`); }});
   },
-  booking(e){ const b=e.booking; $("#booked").className="booked show";
-    $("#booked").innerHTML=`<div class="small" style="color:var(--ok);font-weight:600">BOOKED</div><div class="conf">${esc(b.confirmation)}</div>
+  booking(e){ const b=e.booking, label=b.slot ? "Booked" : "Request sent"; $("#booked").className="booked show";
+    $("#booked").innerHTML=`<div class="small" style="color:var(--ok);font-weight:600">${label.toUpperCase()}</div><div class="conf">${esc(b.confirmation)}</div>
       <div class="what">${esc(b.provider_name)} · ${esc(b.when)}</div><div class="where">${esc(b.address)} · about $${b.cost} to you${b.referral?` · referral ${esc(b.referral)} pending`:""}</div>`;
-    done = true; pill("Booked"); },
+    done = true; pill(label); },
   intake(e){ $("#intake").textContent = JSON.stringify(e.record, null, 2); },
   alert(e){ const t={integrity:"Integrity · request declined", emergency:"EMERGENCY · 911 advised", crisis:"Crisis · 988 shared", identity:"Identity"}[e.kind]||"Alert";
     alertBox(e.level==="emergency"?"emergency":"review", t, e.text, e.quote); },
   hold(){ pill("On hold · waiting","live hold"); msg("sys","Caller put the line on hold"); },
+  off_topic(e){ msg("sys",`Off-topic (${e.topic}): steered back`); },
   handoff(e){ alertBox("info","Handed to a person", e.reason); done = true; pill("Handed off"); },
-  call_ended(){ timer(false); if(!["Booked","Handed off"].includes($("#pillText").textContent)) pill("Call ended"); },
+  call_ended(){ timer(false); if(!["Booked","Request sent","Handed off"].includes($("#pillText").textContent)) pill("Call ended"); },
 };
 new EventSource("/stream").onmessage = m => { const e = JSON.parse(m.data); on[e.type]?.(e); };
 </script>

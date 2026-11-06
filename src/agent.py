@@ -31,7 +31,7 @@ from livekit.plugins import ai_coustics
 from baton_agent import BatonAgent
 from baton_core import CAREGIVERS, CLIENTS
 from booking_agent import BookingAgent
-from covered_core import MEMBERS, PROVIDERS
+from covered_core import HAND_PROVIDERS, MEMBERS
 from models import load_models
 from my_agent import MyAgent
 from screener_agent import ScreenerAgent
@@ -130,11 +130,14 @@ async def entrypoint(ctx: JobContext) -> None:
                 *(g["name"] for g in CAREGIVERS.values()),
                 # Covered: provider and member names, plan words.
                 "Covered",
+                "insurance ID",
+                *(m["member_id"] for m in MEMBERS.values()),
                 "in-network",
                 "copay",
                 "deductible",
                 "referral",
-                *(p["name"] for p in PROVIDERS),
+                # Hand-written only: the full directory is too long a list for STT.
+                *(p["name"] for p in HAND_PROVIDERS),
                 *(m["full_name"] for m in MEMBERS.values()),
             ],
             keyterm_detection={"enabled": True},
@@ -148,8 +151,10 @@ async def entrypoint(ctx: JobContext) -> None:
             # Decides when the caller has finished speaking, using both the words
             # and the audio (pitch, pauses). Much better than a fixed silence timer.
             turn_detection=inference.TurnDetector(),
-            # Start drafting a reply before the turn is confirmed. Cuts latency.
-            preemptive_generation={"enabled": True},
+            # Start drafting the reply and its audio before the turn is confirmed.
+            # Cuts latency, but the voice costs more when a draft gets thrown away.
+            # Tools still wait for the confirmed turn, so a draft can't book anything.
+            preemptive_generation={"enabled": True, "preemptive_tts": True},
         ),
         user_away_timeout=SILENCE_SECONDS,
     )

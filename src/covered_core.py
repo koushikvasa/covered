@@ -20,11 +20,16 @@ import re
 import time
 import uuid
 from datetime import date, datetime, timedelta
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from baton_core import detect_emergency  # shared, tested emergency detector
+from covered_directory import background_words, fill_gaps
 
-__all__ = ["detect_emergency"]
+__all__ = ["background_words", "detect_emergency"]
+
+# Close enough to be the same name misheard, without matching a relative's name.
+NAME_MATCH_THRESHOLD = 0.8
 
 # ----------------------------------------------------------------- reference
 ZIPS = {
@@ -52,17 +57,44 @@ SPECIALTIES = {
     "dermatology": "dermatologist",
     "cardiology": "heart doctor",
     "ob_gyn": "OB-GYN",
+    "neurology": "neurologist",
+    "ent": "ear, nose and throat doctor",
+    "ophthalmology": "eye doctor",
+    "gastroenterology": "digestive health doctor",
+    "endocrinology": "diabetes and hormone doctor",
+    "allergy": "allergy doctor",
+    "pediatrics": "pediatrician",
+    "physical_therapy": "physical therapist",
+    "urology": "urologist",
+    "podiatry": "foot doctor",
+}
+# Specialists an HMO member needs a referral for.
+REFERRAL_SPECIALTIES = {
+    "orthopedics",
+    "dermatology",
+    "cardiology",
+    "neurology",
+    "ent",
+    "ophthalmology",
+    "gastroenterology",
+    "endocrinology",
+    "allergy",
+    "physical_therapy",
+    "urology",
+    "podiatry",
 }
 
 PLANS = {
     "silver_hmo": {
         "name": "Covered Silver HMO",
-        "needs_referral": {"orthopedics", "dermatology", "cardiology"},
+        "needs_referral": REFERRAL_SPECIALTIES,
         "copay": {
             "primary_care": 25,
             "mental_health": 30,
             "specialist": 60,
             "ob_gyn": 25,
+            "pediatrics": 25,
+            "physical_therapy": 40,
         },
         "coinsurance": 0.2,
         "services": {
@@ -81,6 +113,8 @@ PLANS = {
             "mental_health": 20,
             "specialist": 40,
             "ob_gyn": 20,
+            "pediatrics": 20,
+            "physical_therapy": 30,
         },
         "coinsurance": 0.1,
         "services": {
@@ -131,7 +165,7 @@ for _pair in filter(None, os.getenv("COVERED_DEMO_PHONES", "").split(",")):
 
 # tier 1 = copay only; tier 2 = deductible then coinsurance on the allowed amount
 # ghost = what a real secret-shopper call would find
-PROVIDERS = [
+HAND_PROVIDERS = [
     {
         "id": "dr-lee",
         "name": "Dr. Lena Lee",
@@ -279,6 +313,32 @@ PROVIDERS = [
         "times": ["9:00 AM", "1:00 PM"],
     },
 ]
+# Hand-written providers' backgrounds and practice fees (all invented).
+_HAND_DETAILS = {
+    "dr-lee": (0, 18, "Eastmere Medical School", "preventive care"),
+    "dr-okafor": (0, 9, "Lakeshire School of Medicine", "family medicine"),
+    "dr-patel": (0, 14, "Stonebridge University", "anxiety and stress"),
+    "dr-kim": (0, 22, "Westhollow College of Medicine", "depression"),
+    "dr-reyes": (10, 7, "Riverton Medical College", "life transitions"),
+    "dr-brennan": (0, 25, "Ashgrove University", "joint pain"),
+    "dr-nguyen": (15, 11, "Eastmere Medical School", "skin checks"),
+    "dr-adams": (25, 30, "Stonebridge University", "heart rhythm"),
+    "dr-silva": (5, 16, "Lakeshire School of Medicine", "prenatal care"),
+}
+for _p in HAND_PROVIDERS:
+    if _p["id"] in _HAND_DETAILS:
+        _fee, _years, _school, _focus = _HAND_DETAILS[_p["id"]]
+        _p["practice_fee"] = _fee
+        _p["background"] = {
+            "years": _years,
+            "training": _school,
+            "board_certified": True,
+            "focus": _focus,
+        }
+    elif not _p.get("ghost"):  # Hudson Orthopedic Group
+        _p["background"] = {"group": True, "focus": "sports injuries and joint pain"}
+
+PROVIDERS = HAND_PROVIDERS + fill_gaps(HAND_PROVIDERS, SPECIALTIES, ZIPS)
 PROVIDER = {p["id"]: p for p in PROVIDERS}
 MAX_MILES = 8.0
 DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
@@ -361,9 +421,37 @@ def member_by_name(name: str) -> str | None:
     return None
 
 
+def member_by_id(insurance_id: str) -> str | None:
+    """Accepts 'MBR-12345', 'mbr 12345', 'M B R 1 2 3 4 5' or just the digits."""
+    spoken = re.sub(r"[^A-Z0-9]", "", (insurance_id or "").upper())
+    if not spoken:
+        return None
+    for mid, m in MEMBERS.items():
+        on_file = re.sub(r"[^A-Z0-9]", "", m["member_id"])
+        if spoken == on_file or spoken == re.sub(r"\D", "", on_file):
+            return mid
+    return None
+
+
+def name_matches(member_id: str, name: str) -> bool:
+    """Is this caller the member? Tolerant of speech-to-text mishearing a name."""
+    return _same_person(name, MEMBERS[member_id]["full_name"])
+
+
+def _same_person(spoken: str, on_file: str) -> bool:
+    """Full name required: with no date of birth, it is half of the proof."""
+    n, full = _norm(spoken), _norm(on_file)
+    if not n:
+        return False
+    if full in n:
+        return True
+    return SequenceMatcher(None, n, full).ratio() >= NAME_MATCH_THRESHOLD
+
+
 def normalize_dob(text: str) -> str | None:
-    """Accepts '1990-04-12', '04/12/1990', 'April 12 1990', '12 April 1990'."""
+    """Accepts '1990-04-12', '04/12/1990', 'April 12th 1990', '12 April 1990'."""
     t = (text or "").strip().replace(",", " ")
+    t = re.sub(r"(\d)(st|nd|rd|th)\b", r"\1", t, flags=re.IGNORECASE)
     for fmt in (
         "%Y-%m-%d",
         "%m/%d/%Y",
@@ -383,12 +471,9 @@ def normalize_dob(text: str) -> str | None:
 def is_authorized_rep(
     member_id: str, caller_name: str, caller_phone: str | None
 ) -> bool:
-    n = _norm(caller_name)
     for r in MEMBERS[member_id]["authorized_reps"]:
-        rn = _norm(r["name"])
-        name_ok = bool(n) and (rn in n or n in rn.split())
         phone_ok = bool(caller_phone) and _digits(caller_phone) == _digits(r["phone"])
-        if name_ok or phone_ok:
+        if _same_person(caller_name, r["name"]) or phone_ok:
             return True
     return False
 
@@ -411,12 +496,16 @@ def coverage_answer(member_id: str, service: str) -> str | None:
     return None
 
 
+def copay_estimate(member_id: str, specialty: str) -> int:
+    copays = plan(member_id)["copay"]
+    return int(copays[specialty if specialty in copays else "specialist"])
+
+
 def estimate_cost(member_id: str, provider_id: str) -> int:
     m, p = MEMBERS[member_id], PROVIDER[provider_id]
     pl = plan(member_id)
     if p["tier"] == 1:
-        key = p["specialty"] if p["specialty"] in pl["copay"] else "specialist"
-        return int(pl["copay"][key])
+        return copay_estimate(member_id, p["specialty"]) + p.get("practice_fee", 0)
     remaining = max(0, m["deductible"] - m["deductible_met"])
     toward_deductible = min(remaining, p["allowed"])
     return round(
@@ -430,7 +519,7 @@ def resolve_zip(text: str | None, default: str) -> str | None:
         return default
     digits = re.sub(r"\D", "", text)
     if len(digits) == 5:
-        return digits if digits in ZIPS else None
+        return digits  # ZIPs outside the demo network go to the live registry
     t = _norm(text)
     return next((z for place, z in PLACE_TO_ZIP.items() if place in t), None)
 
@@ -453,7 +542,7 @@ def upcoming_slots(
         if day.weekday() >= 5:
             continue
         # stagger: providers aren't open every day
-        if (day.toordinal() + len(provider_id)) % 3 == 0:
+        if (day.toordinal() + sum(map(ord, provider_id))) % 3 == 0:
             continue
         out += [f"{day.isoformat()} {t}" for t in p["times"]]
         if len(out) > 12:
@@ -477,7 +566,8 @@ def search(
     time_of_day: str = "any",
     prefer_provider: str | None = None,
 ) -> dict:
-    """In-network, nearby, really bookable. Returns offers (max 2) and skipped ghosts."""
+    """In-network, in this ZIP (or nearby if nothing fits), really bookable.
+    Returns offers (max 2, cheapest first) and skipped ghosts."""
     inc = {d.lower() for d in include_days or [] if d.lower() in DAYS}
     exc = {d.lower() for d in exclude_days or [] if d.lower() in DAYS}
     offers, ghosts, no_match = [], [], []
@@ -522,8 +612,11 @@ def search(
                 "slot": slots[0],
                 "cost": estimate_cost(member_id, p["id"]),
                 "tier": p["tier"],
+                "background": background_words(p),
             }
         )
+    # Doctors in the caller's own ZIP come first, so a new ZIP means new doctors.
+    offers = [o for o in offers if o["miles"] == 0] or offers
     offers.sort(
         key=lambda o: (o["id"] != prefer_provider, o["cost"], o["slot"], o["miles"])
     )
@@ -603,6 +696,27 @@ class Store:
         self.data["bookings"].append(b)
         self.save()
         return b
+
+    def add_request(
+        self, member_id: str, provider_id: str, cost: int, referral: str | None
+    ) -> dict:
+        """An appointment request to a live provider: no time is claimed or held."""
+        requests = self.data.setdefault("requests", [])
+        for existing in requests:
+            if (existing["member"], existing["provider"]) == (member_id, provider_id):
+                return existing
+        r = {
+            "confirmation": "RQ-" + uuid.uuid4().hex[:6].upper(),
+            "member": member_id,
+            "provider": provider_id,
+            "slot": None,
+            "cost": cost,
+            "referral": referral,
+            "at": time.time(),
+        }
+        requests.append(r)
+        self.save()
+        return r
 
     def report_ghosts(self, ghosts: list[dict]) -> None:
         known = {g["id"] for g in self.data["ghost_reports"]}
