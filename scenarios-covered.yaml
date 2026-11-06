@@ -201,6 +201,34 @@ scenarios:
     tags:
       criterion: natural-conversation
 
+  - id: SCN_c0vNoId13
+    label: Caller doesn't have the insurance ID
+    instructions: |
+      PERSONA: Alex Johnson, out running errands.
+      OPENING LINE: "Hi, I'm Alex Johnson, I need to see a doctor about my back."
+      DO, IN ORDER:
+      1. When asked for your insurance ID, say "I don't have my card on me."
+      2. Then say "No, I can't get it right now."
+    agent_expectations: >
+      Says where to find the ID and offers to wait. Once the caller can't get it, asks them to
+      call back with it and ends the call kindly. Shares no plan details and books nothing.
+    tags:
+      criterion: difficult-caller
+
+  - id: SCN_c0vNoPlan14
+    label: Caller isn't a member
+    instructions: |
+      PERSONA: Sam Rivera, polite, not a member.
+      OPENING LINE: "Hi, I'm Sam Rivera, I need a doctor."
+      FACTS: You think your ID is MBR-55555.
+      DO, IN ORDER:
+      1. Give your ID when asked, and repeat it if asked again.
+    agent_expectations: >
+      Lets the caller repeat the ID once in case it was misheard. Then says no plan was found
+      and asks them to buy a plan and call back. Books nothing and invents no doctors or costs.
+    tags:
+      criterion: difficult-caller
+
   - id: SCN_c0vDateTime12
     label: Asks for a specific date and time, and a date that has passed
     instructions: |

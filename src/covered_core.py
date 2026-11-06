@@ -23,10 +23,10 @@ from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from baton_core import detect_emergency  # shared, tested emergency detector
+from baton_core import detect_emergency as _emergency_phrase  # shared, tested phrases
 from covered_directory import background_words, fill_gaps
 
-__all__ = ["background_words", "detect_emergency"]
+__all__ = ["background_words"]
 
 # Close enough to be the same name misheard, without matching a relative's name.
 NAME_MATCH_THRESHOLD = 0.8
@@ -341,9 +341,18 @@ for _p in HAND_PROVIDERS:
 PROVIDERS = HAND_PROVIDERS + fill_gaps(HAND_PROVIDERS, SPECIALTIES, ZIPS)
 PROVIDER = {p["id"]: p for p in PROVIDERS}
 MAX_MILES = 8.0
+MAX_OPEN_SLOTS = 3  # how many times to suggest for each doctor when given a whole week
+FRIDAY = 4
+WEEKEND_DAYS = {"saturday", "sunday"}
 DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
 # ------------------------------------------------------------------- speech
+PAST_EVENT = re.compile(
+    r"\b(last (week|month|year)|(days?|weeks?|months?|years?) ago|used to|history of)\b"
+)
+STILL_HAPPENING = re.compile(
+    r"\b(now|today|still|again|tonight|this (morning|afternoon|evening))\b"
+)
 CRISIS_PHRASES = [
     "kill myself",
     "end my life",
@@ -357,8 +366,8 @@ CRISIS_PHRASES = [
 INTEGRITY_PHRASES = [
     "my husband's insurance",
     "my wife's insurance",
-    "his insurance",
-    "her insurance card",
+    "under his insurance",
+    "under her insurance",
     "my sister's insurance",
     "my brother's insurance",
     "someone else's insurance",
@@ -375,6 +384,18 @@ INTEGRITY_PHRASES = [
 
 def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9' ]+", " ", (s or "").lower()).strip()
+
+
+def detect_emergency(text: str) -> str | None:
+    """An emergency phrase, unless the caller clearly means something already over.
+    When in doubt it still fires: a false alarm costs less than a missed emergency."""
+    phrase = _emergency_phrase(text)
+    if not phrase:
+        return None
+    said = _norm(text)
+    if PAST_EVENT.search(said) and not STILL_HAPPENING.search(said):
+        return None
+    return phrase
 
 
 def detect_crisis(text: str) -> str | None:
@@ -597,6 +618,33 @@ def slot_words(slot: str) -> str:
     return f"{dt.strftime('%A %B')} {dt.day} at {t}"
 
 
+def is_weekend(day: date) -> bool:
+    return day.weekday() > FRIDAY
+
+
+def week_range(which: str, today: date | None = None) -> tuple[date, date]:
+    """First and last bookable day of 'this_week' (from today) or 'next_week'."""
+    today = today or date.today()
+    if which == "next_week":
+        monday = today + timedelta(days=7 - today.weekday())
+        return monday, monday + timedelta(days=FRIDAY)
+    return today, today + timedelta(days=FRIDAY - today.weekday())
+
+
+def bookable_days(today: date | None = None, weeks: int = 3) -> list[str]:
+    """Upcoming weekdays in words, so the agent never has to work out a date itself."""
+    today = today or date.today()
+    days = (today + timedelta(days=n) for n in range(1, weeks * 7 + 1))
+    return [day_words(day) for day in days if not is_weekend(day)]
+
+
+def _varied_slots(slots: list[str]) -> list[str]:
+    """Up to MAX_OPEN_SLOTS times, offering different days before a second time on one."""
+    first_of_each_day = list({s[:10]: s for s in reversed(slots)}.values())[::-1]
+    others = [s for s in slots if s not in first_of_each_day]
+    return (first_of_each_day + others)[:MAX_OPEN_SLOTS]
+
+
 def _best_slot(slots: list[str], preferred_minutes: int | None) -> str:
     """The earliest open day, at the time nearest what the caller asked for."""
     if preferred_minutes is None:
@@ -616,14 +664,21 @@ def search(
     prefer_provider: str | None = None,
     preferred_date: date | None = None,
     preferred_minutes: int | None = None,
+    window_end: date | None = None,
 ) -> dict:
     """In-network, in this ZIP (or nearby if nothing fits), really bookable.
     Returns offers (max 2, cheapest first) and skipped ghosts."""
     inc = {d.lower() for d in include_days or [] if d.lower() in DAYS}
     exc = {d.lower() for d in exclude_days or [] if d.lower() in DAYS}
     offers, ghosts, no_match = [], [], []
-    # upcoming_slots starts the day after this, so the preferred date itself is included.
-    start = preferred_date - timedelta(days=1) if preferred_date else None
+    # upcoming_slots starts the day after this, so the preferred date itself is included,
+    # but never today, whose times may already have passed.
+    start = (
+        max(preferred_date - timedelta(days=1), date.today())
+        if preferred_date
+        else None
+    )
+    last_day = window_end.isoformat() if window_end else None
     for p in PROVIDERS:
         if p["specialty"] != specialty:
             continue
@@ -639,6 +694,8 @@ def search(
         for s in upcoming_slots(p["id"], taken, start):
             wd = datetime.fromisoformat(s.split(" ")[0]).strftime("%A").lower()
             if (inc and wd not in inc) or wd in exc:
+                continue
+            if last_day and s[:10] > last_day:
                 continue
             hour_pm = s.endswith("PM") and not s.split(" ")[1].startswith("12")
             if (time_of_day == "morning" and hour_pm) or (
@@ -663,6 +720,7 @@ def search(
                 "miles": dist,
                 "address": p["address"],
                 "slot": _best_slot(slots, preferred_minutes),
+                "open_slots": _varied_slots(slots),
                 "cost": estimate_cost(member_id, p["id"]),
                 "tier": p["tier"],
                 "background": background_words(p),

@@ -99,8 +99,8 @@ async def test_identity_is_name_and_insurance_id(agent):
     a, c = agent, None
     # the right name is useless with someone else's or no ID
     assert "didn't match" in await a.verify_identity(c, "Alex Johnson", "MBR-99999")
-    assert "didn't match" in await a.verify_identity(c, "Alex Johnson", "unknown")
     assert a.member is None
+    a.fails = 0  # one retry is allowed; start the spoken-form check fresh
     # spoken forms of the ID still work, and a misheard name doesn't block a member
     r = await a.verify_identity(c, "Alex Johnston", "M B R 12345")
     assert r.startswith("Verified Alex Johnson") and a.relationship == "self"
@@ -170,7 +170,7 @@ async def test_rep_rules(agent):
 async def test_three_failures_lock(agent):
     for _ in range(3):
         r = await agent.verify_identity(None, "Alex Johnson", "MBR-99999")
-    assert "Third failed attempt" in r
+    assert "buy" in r
     r = await agent.verify_identity(None, *ALEX)
     assert "locked" in r
 
@@ -528,6 +528,162 @@ async def test_realtime_slow_down_updates_the_instructions_once(agent, monkeypat
     await asyncio.sleep(0)
 
     assert len(updates) == 1 and "slower pace" in updates[0]
+
+
+def _next_weekend_day(weekday: int) -> str:
+    from datetime import date, timedelta
+
+    today = date.today()
+    return (today + timedelta(days=(weekday - today.weekday()) % 7 or 7)).isoformat()
+
+
+@pytest.mark.parametrize("weekday", [5, 6])
+async def test_a_weekend_date_is_refused_not_moved(agent, weekday):
+    a, c = agent, None
+    await a.verify_identity(c, *ALEX)
+    r = await a.find_care(
+        c,
+        "mental_health",
+        "stress",
+        HOME_ZIP,
+        preferred_date=_next_weekend_day(weekday),
+    )
+    assert "Monday to Friday" in r and "Option A" not in r and a.offers == {}
+
+
+async def test_asking_for_a_weekend_day_by_name_is_refused(agent):
+    a, c = agent, None
+    await a.verify_identity(c, *ALEX)
+    r = await a.find_care(
+        c, "mental_health", "stress", HOME_ZIP, include_days=["Saturday"]
+    )
+    assert "Monday to Friday" in r and a.offers == {}
+
+
+async def test_asking_for_today_never_offers_a_time_today(agent):
+    from datetime import date
+
+    a, c = agent, None
+    await a.verify_identity(c, *ALEX)
+    today = date.today().isoformat()
+    await a.find_care(c, "mental_health", "stress", HOME_ZIP, preferred_date=today)
+    assert a.offers and all(o["slot"][:10] > today for o in a.offers.values())
+
+
+async def test_next_week_suggests_open_times_in_that_week(agent):
+    a, c = agent, None
+    await a.verify_identity(c, *ALEX)
+    import covered_core as cc
+
+    first, last = cc.week_range("next_week")
+
+    r = await a.find_care(c, "mental_health", "stress", HOME_ZIP, week="next_week")
+
+    assert "which doctor and time" in r
+    for offer in a.offers.values():
+        assert len(offer["open_slots"]) > 1
+        assert all(
+            first.isoformat() <= s[:10] <= last.isoformat() for s in offer["open_slots"]
+        )
+        assert all(cc.slot_words(s) in r for s in offer["open_slots"])
+
+
+async def test_a_named_week_ignores_a_guessed_day_and_time(agent):
+    a, c = agent, None
+    await a.verify_identity(c, *ALEX)
+    import covered_core as cc
+
+    last = cc.week_range("next_week")[1]
+
+    r = await a.find_care(
+        c,
+        "mental_health",
+        "stress",
+        HOME_ZIP,
+        week="next_week",
+        preferred_date=last.isoformat(),
+        preferred_time="12:00",
+    )
+
+    assert "closest opening" not in r
+    assert a.offers["A"]["open_slots"][0][:10] < last.isoformat()
+    assert a.timing["minutes"] is None
+
+
+def test_agent_is_given_a_real_calendar_of_bookable_days(agent):
+    import covered_core as cc
+
+    days = cc.bookable_days()
+    assert all(day.split()[0] not in ("Saturday", "Sunday") for day in days)
+    assert all(day in agent.instructions for day in days)
+
+
+async def test_a_repeat_only_needs_the_id_when_the_name_is_known(agent):
+    r = await agent.verify_identity(None, "Sam Rivera", "MBR-55555")
+    assert "already have their name" in r
+
+
+async def test_a_new_search_clears_the_old_offers(agent):
+    a, c = agent, None
+    await a.verify_identity(c, *ALEX)
+    await a.find_care(c, "mental_health", "stress", HOME_ZIP, any_time=True)
+    assert a.offers
+
+    r = await a.find_care(c, "orthopedics", "knee pain")  # stops at the referral rule
+
+    assert "referral" in r and a.offers == {}
+    booked = await a.book_appointment(c, "A", confirmed=True)
+    assert "isn't available" in booked and a.booking is None
+
+
+async def test_buying_a_plan_never_points_to_a_place_we_dont_have(agent):
+    await agent.verify_identity(None, "Sam Rivera", "MBR-55555")
+    not_found = await agent.verify_identity(None, "Sam Rivera", "MBR-55555")
+    no_plan = await agent.caller_without_id(None, "no_plan")
+    for result in (not_found, no_plan):
+        assert "Do not say where to buy" in result
+
+
+async def test_caller_can_book_any_of_the_suggested_times(agent):
+    a, c = agent, None
+    await a.verify_identity(c, *ALEX)
+    await a.find_care(c, "mental_health", "stress", HOME_ZIP, week="next_week")
+    import covered_core as cc
+
+    second = a.offers["A"]["open_slots"][1]
+
+    r = await a.book_appointment(c, "A", slot_number=2)
+    assert cc.slot_words(second) in r and "Shall I book it" in r
+    await a.book_appointment(c, "A", confirmed=True)  # keeps the time just read back
+    assert a.booking["slot"] == second
+
+
+async def test_a_time_that_was_not_suggested_is_refused(agent):
+    a, c = agent, None
+    await a.verify_identity(c, *ALEX)
+    await a.find_care(c, "mental_health", "stress", HOME_ZIP, week="next_week")
+    r = await a.book_appointment(c, "A", slot_number=9, confirmed=True)
+    assert "isn't one of" in r and a.booking is None
+
+
+async def test_no_insurance_id_points_to_the_card_and_asks_for_a_call_back(agent):
+    r = await agent.caller_without_id(None, "cant_find_id")
+    assert "insurance card" in r and "call back" in r and "hold_on" in r
+
+
+async def test_caller_with_no_plan_is_asked_to_buy_one_and_call_back(agent):
+    r = await agent.caller_without_id(None, "no_plan")
+    assert "buy" in r and "call back" in r
+
+
+async def test_someone_not_on_file_is_asked_to_buy_a_plan_after_one_retry(agent):
+    first = await agent.verify_identity(None, "Sam Rivera", "MBR-55555")
+    assert "repeat" in first and "buy" not in first  # may just be a mishearing
+
+    second = await agent.verify_identity(None, "Sam Rivera", "MBR-55555")
+
+    assert "buy" in second and "call back" in second and "end the call" in second
+    assert agent.member is None
 
 
 async def test_slot_taken_race(agent):

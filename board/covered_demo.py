@@ -37,8 +37,9 @@ async def run_covered_demo(broadcast) -> None:
     await broadcast({"type": "call_started", "call": a.call_id, "t": time.time()})
     await say(
         "assistant",
-        "Hi, this is Covered, your health plan's care line. "
-        "Can I get your name and what you're calling about today?",
+        "Hi, thanks for calling Covered, your health plan's care line. I'm your virtual "
+        "assistant, and I can find you a doctor, book your visit, and tell you the cost "
+        "up front. May I have your full name, and what can I help you with today?",
     )
     await say("user", "It's Alex Johnson. My knee's been killing me for weeks.")
     await say(

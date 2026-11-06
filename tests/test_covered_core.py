@@ -221,6 +221,98 @@ def test_request_records_the_preferred_time(store):
     assert r["preferred"] == "Tuesday morning"
 
 
+def test_week_range_is_always_monday_to_friday():
+    from datetime import date
+
+    friday, wednesday = date(2026, 11, 6), date(2026, 11, 4)
+    saturday = date(2026, 11, 7)
+    assert cc.week_range("next_week", friday) == (date(2026, 11, 9), date(2026, 11, 13))
+    assert cc.week_range("next_week", saturday) == (
+        date(2026, 11, 9),
+        date(2026, 11, 13),
+    )
+    assert cc.week_range("this_week", wednesday) == (wednesday, friday)
+
+
+def test_week_window_keeps_slots_inside_it_and_spreads_them_across_days(store):
+    first, last = cc.week_range("next_week")
+    offers = cc.search(
+        "elena",
+        "mental_health",
+        "07030",
+        store.taken,
+        preferred_date=first,
+        window_end=last,
+    )["offers"]
+    for o in offers:
+        assert first.isoformat() <= o["slot"][:10] <= last.isoformat()
+        assert len(o["open_slots"]) <= cc.MAX_OPEN_SLOTS
+        days = [s[:10] for s in o["open_slots"]]
+        assert len(set(days)) == len(
+            days
+        )  # a choice of days comes before two on one day
+
+
+def test_search_never_offers_a_slot_today_or_on_a_weekend(store):
+    from datetime import date, datetime
+
+    for p in cc.PROVIDERS[:25]:
+        if p.get("ghost"):
+            continue
+        for s in cc.upcoming_slots(p["id"], store.taken):
+            day = datetime.fromisoformat(s[:10]).date()
+            assert day > date.today() and day.weekday() < 5
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "I have her insurance card right here",
+        "It's his insurance, he's my son and I'm on the plan",
+    ],
+)
+def test_mentioning_a_relatives_insurance_is_not_fraud(said):
+    assert cc.detect_integrity(said) is None
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "Book it under his insurance",
+        "put me under her insurance",
+        "my wife's insurance",
+    ],
+)
+def test_using_someone_elses_insurance_is_still_flagged(said):
+    assert cc.detect_integrity(said)
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "I had chest pain last year and want a heart checkup",
+        "my dad was choking on his food last month",
+        "I had a seizure two years ago, I need a neurologist",
+    ],
+)
+def test_a_past_event_is_not_an_emergency(said):
+    assert cc.detect_emergency(said) is None
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "I have chest pain right now",
+        "I had chest pain last week and it's back now",
+        "I had chest pain last year and I still have it today",
+        "she's choking",
+        "I had chest pain",  # no sign it's over, so stay on the safe side
+    ],
+)
+def test_a_current_or_unclear_event_is_still_an_emergency(said):
+    assert cc.detect_emergency(said)
+
+
 def test_detectors():
     assert cc.detect_crisis("honestly I want to end my life")
     assert cc.detect_crisis("I'm stressed about work") is None

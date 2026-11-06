@@ -58,7 +58,9 @@ lk agent simulate text --scenarios scenarios-covered.yaml   # before milestones 
 | Only providers with a real open slot are offered; ghosts skipped and reported | `covered_core.search` |
 | Max 2 options from the caller's own ZIP (nearby only if nothing fits), cheapest first; returning patients get their old provider first | `search` |
 | Comparing doctors gives background facts only, never who is better | `compare_doctors` |
-| No doctors until the caller gives a date and time (or says any); past dates are questioned; nearest slot wins | `find_care`, `_update_timing`, `search` |
+| No doctors until the caller gives a date and time (or says any); past dates and weekends are refused, appointments are Monday to Friday; nearest slot wins | `find_care`, `_update_timing`, `search` |
+| "Next week" or "this week" suggests up to three open times per doctor, and the caller picks one | `week_range`, `book_appointment(slot_number)` |
+| No insurance ID: point to the card and offer to wait, otherwise ask them to call back. Not on file after one retry, or no plan: ask them to buy a plan and call back | `caller_without_id`, `verify_identity` |
 | Every cost comes with its true reason, so the agent can't invent one | `cost_reason` |
 | Safety checks run in both pipelines: `on_user_turn_completed`, or final transcripts when `REALTIME=true` | `_on_realtime_transcript` |
 | Member's own cost. Tier 1: plan copay + practice fee. Tier 2: deductible left, then coinsurance on the allowed amount | `estimate_cost` |

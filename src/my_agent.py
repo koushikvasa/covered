@@ -35,6 +35,14 @@ MAX_LIVE_OFFERS = 2
 SLOWER_PACE_NOTE = (
     "Caller asked for a slower pace: give one detail per sentence, very short."
 )
+# A first miss may just be misheard, so the caller gets one retry before this.
+NOT_ON_FILE_AFTER = 2
+NOT_ON_FILE = (
+    "No plan was found under those details; do not say which part. Say so kindly, and ask them to "
+    "buy a Covered plan and call back once they have one. Do not say where to buy one. If they're sure they already have a plan, "
+    "offer a person instead. Otherwise say a warm goodbye and end the call."
+)
+WEEK_WORDS = {"this_week": "this week", "next_week": "next week"}
 ASK_FOR_TIMING = (
     "Kindly ask what date and time would suit them, or whether any time works, then call "
     "find_care again with their answer. Do not suggest doctors yet."
@@ -74,10 +82,13 @@ Use plain words. Explain a term only if it matters ("in-network means your plan 
 1. Start with the caller's full name and why they're calling, in their own words.
 2. Verify identity before any account detail. Ask for the insurance ID on their card,
    saying it's to protect the account. If they call for someone else, ask for that
-   person's insurance ID. Then call verify_identity.
+   person's insurance ID. Then call verify_identity. If they don't have the ID with them
+   or say they have no plan with us, call caller_without_id.
 3. Map their reason to a type of provider; never diagnose. If unsure, choose primary_care.
    Ask for the ZIP code where they want care; never assume one. Then ask what date and
-   time suit them, one question at a time. Then call find_care.
+   time suit them. As soon as they answer, even vaguely ("next week", "any weekday"), call
+   find_care without asking for more. Pass what they said even if it's a past date or a
+   weekend: the tool checks it.
 4. Do exactly what each tool result tells you. Offer at most two options, one sentence each.
 5. Before requesting a referral or booking, read the details back and ask yes or no.
    Only after a clear yes, call the tool again with confirmed true. Silence is not a yes.
@@ -85,6 +96,7 @@ Use plain words. Explain a term only if it matters ("in-network means your plan 
    then say goodbye and end the call.
 
 Never invent coverage, costs, providers or times: use only what tools return.
+Never work out a weekday yourself: use the list of bookable days below.
 Refer to doctors by name, never "he" or "she": you don't know their gender.
 Never book for anyone you have not verified, and never use someone else's insurance.
 If they want a person, call transfer_to_human. If they say "hold on", call hold_on.
@@ -109,7 +121,9 @@ def _caller_phone() -> str | None:
 class MyAgent(Agent):
     def __init__(self) -> None:
         super().__init__(
-            instructions=build_instructions(JOB_PROMPT),
+            instructions=build_instructions(
+                f"{JOB_PROMPT}\nBookable days: {', '.join(cc.bookable_days())}."
+            ),
             tools=[
                 EndCallTool(
                     ignore_on_enter=True,
@@ -118,8 +132,8 @@ class MyAgent(Agent):
                     end_instructions=None,
                     extra_description=(
                         "Only after a booking or handoff is done, after an emergency, "
-                        "or when the caller asks to stop. Say your short goodbye in "
-                        "the same reply that calls this tool."
+                        "after asking them to call back, or when the caller asks to stop. "
+                        "Say your short goodbye in the same reply that calls this tool."
                     ),
                 )
             ],
@@ -257,8 +271,10 @@ class MyAgent(Agent):
         self.phone = _caller_phone()
         await self.session.generate_reply(
             instructions=(
-                "Say: 'Hi, this is Covered, your health plan's care line. "
-                "Can I get your full name and what you're calling about today?'"
+                "Say warmly: 'Hi, thanks for calling Covered, your health plan's care line. "
+                "I'm your virtual assistant, and I can find you a doctor, book your visit, "
+                "and tell you the cost up front. May I have your full name, and what can I "
+                "help you with today?'"
             )
         )
 
@@ -366,12 +382,12 @@ class MyAgent(Agent):
         if not mid:
             self.fails += 1
             board.emit("identity_failed", self.call_id, attempts=self.fails)
-            if self.fails >= 3:
-                self._flag("identity", "review", "Three failed verification attempts")
-                return "Third failed attempt. Say you can't verify them, offer a person, share no details."
+            if self.fails >= NOT_ON_FILE_AFTER:
+                self._flag("identity", "review", "Caller not found on file")
+                return NOT_ON_FILE
             return (
-                "That didn't match our records. Do not say which part. Kindly ask them to repeat their full "
-                "name and insurance ID."
+                "That didn't match our records. Do not say which part. You already have their name, so kindly "
+                "ask them to repeat just their insurance ID, then call verify_identity again."
             )
         member_name = cc.MEMBERS[mid]["full_name"]
         if not cc.name_matches(mid, caller_full_name):
@@ -407,6 +423,7 @@ class MyAgent(Agent):
         preferred_date: str = "",
         preferred_time: str = "",
         any_time: bool = False,
+        week: Literal["any", "this_week", "next_week"] = "any",
     ) -> str:
         """Find in-network providers with real open times near the member. Call this once
         you know what care they need, their ZIP code, and what date and time suit them.
@@ -429,10 +446,13 @@ class MyAgent(Agent):
             preferred_date: The date they want as YYYY-MM-DD, worked out from today's date.
                 If they give only a day of the month, use the next time it falls.
             preferred_time: The time they want, e.g. 14:30.
-            any_time: True only if they said any date and time works.
+            any_time: True if they said any date, any weekday, or the soonest works.
+            week: this_week or next_week when they name a week instead of a day, with no
+                preferred_date or preferred_time. The result suggests open times in that week.
         """
         if not self.member:
             return "Not verified yet. Verify identity first; share nothing."
+        self.offers = {}  # a new search replaces them, so old ones can't be booked
         self.specialty, self.need = specialty, need_summary
         z = cc.resolve_zip(location, self.zip)
         if not z:
@@ -445,6 +465,7 @@ class MyAgent(Agent):
             exclude_days,
             time_of_day,
             any_time,
+            week,
         )
         if timing_problem:
             return timing_problem
@@ -477,8 +498,9 @@ class MyAgent(Agent):
             self.timing["exclude_days"],
             self.timing["time_of_day"],
             prev,
-            self.timing["date"],
+            self.timing["search_from"],
             self.timing["minutes"],
+            self.timing["search_until"],
         )
         self.store.report_ghosts(res["ghosts"])
         self.offers = dict(zip("AB", res["offers"]))
@@ -496,6 +518,7 @@ class MyAgent(Agent):
                 "No in-network openings match. Say so in one sentence and ask if another day, time, or a "
                 "nearby area works. Do not invent options."
             )
+        whole_week = self.timing["week"] != "any"
         lines = []
         for k, o in self.offers.items():
             dist = "under a mile" if o["miles"] < 0.5 else f"{o['miles']} miles"
@@ -510,8 +533,17 @@ class MyAgent(Agent):
                 if wanted and o["slot"][:10] != wanted.isoformat()
                 else ""
             )
+            when = (
+                "open "
+                + "; ".join(
+                    f"time {n}: {cc.slot_words(s)}"
+                    for n, s in enumerate(o["open_slots"], start=1)
+                )
+                if whole_week
+                else cc.slot_words(o["slot"])
+            )
             lines.append(
-                f"Option {k}: {o['name']}, {dist} away, {cc.slot_words(o['slot'])}{closest}, "
+                f"Option {k}: {o['name']}, {dist} away, {when}{closest}, "
                 f"their cost about {o['cost']} dollars, {cc.cost_reason(self.member, o['id'])}{again}."
             )
         skipped = (
@@ -519,11 +551,17 @@ class MyAgent(Agent):
             if res["ghosts"]
             else ""
         )
+        ask = (
+            " Give each doctor's name, open times and cost briefly, then ask which doctor and time they'd "
+            "like. Pass their choice to book_appointment as slot_number."
+            if whole_week
+            else " In two short sentences total, give each option's name, day, time and cost, then ask which one."
+        )
         return (
             " ".join(lines)
             + skipped
-            + " In two short sentences total, give each option's name, day, time and cost, then ask which one."
-            " Leave out distance and skipped listings. All of these are in-network. If a cost is high, "
+            + ask
+            + " Leave out distance and skipped listings. All of these are in-network. If a cost is high, "
             "explain it using only the reason given here."
         )
 
@@ -535,6 +573,7 @@ class MyAgent(Agent):
         exclude_days: list[str] | None,
         time_of_day: str,
         any_time: bool,
+        week: str = "any",
     ) -> str | None:
         """Remember the date and time the caller asked for. Returns what to say instead
         of searching if the date can't be used; code decides, so no date is guessed."""
@@ -545,9 +584,12 @@ class MyAgent(Agent):
             exclude_days,
             time_of_day != "any",
             any_time,
+            week != "any",
         )
         if not any(stated):
             return None  # keep what they said earlier, if anything
+        if cc.WEEKEND_DAYS & {day.lower() for day in include_days or []}:
+            return self._weekday_only("That day")
         wanted = None
         if preferred_date:
             wanted = cc.parse_date(preferred_date)
@@ -558,14 +600,32 @@ class MyAgent(Agent):
                     f"{cc.day_words(wanted)} has already passed. Say so kindly and ask what date and "
                     "time would suit them. Do not suggest doctors yet."
                 )
+            if cc.is_weekend(wanted):
+                return self._weekday_only(cc.day_words(wanted))
+        search_from, search_until = wanted, None
+        minutes = cc.parse_time(preferred_time)
+        if week != "any":
+            # They named a whole week, so any day or time here was only the model's guess.
+            search_from, search_until = cc.week_range(week)
+            wanted, minutes = None, None
         self.timing = {
             "date": wanted,
-            "minutes": cc.parse_time(preferred_time),
+            "week": week,
+            "search_from": search_from,
+            "search_until": search_until,
+            "minutes": minutes,
             "include_days": include_days,
             "exclude_days": exclude_days,
             "time_of_day": time_of_day,
         }
         return None
+
+    @staticmethod
+    def _weekday_only(day: str) -> str:
+        return (
+            f"{day} is on a weekend, and appointments are Monday to Friday only. Say so kindly and "
+            "ask which weekday and time would suit them. Do not suggest doctors yet."
+        )
 
     def _timing_words(self) -> str:
         """What the caller asked for, in words an office could act on."""
@@ -573,6 +633,8 @@ class MyAgent(Agent):
         words = []
         if t.get("date"):
             words.append(cc.day_words(t["date"]))
+        if t.get("week") in WEEK_WORDS:
+            words.append(WEEK_WORDS[t["week"]])
         words += [day.title() for day in t.get("include_days") or []]
         if t.get("time_of_day", "any") != "any":
             words.append(f"in the {t['time_of_day']}")
@@ -651,7 +713,11 @@ class MyAgent(Agent):
 
     @function_tool
     async def book_appointment(
-        self, context: RunContext, option: Literal["A", "B"], confirmed: bool = False
+        self,
+        context: RunContext,
+        option: Literal["A", "B"],
+        confirmed: bool = False,
+        slot_number: int = 0,
     ) -> str:
         """Book one of the options find_care returned. As soon as the caller picks an
         option, call this with confirmed false and say the read-back it returns.
@@ -660,6 +726,8 @@ class MyAgent(Agent):
             option: A or B, from the latest find_care result.
             confirmed: Leave false on the first call. True only on a later turn, after
                 the caller said yes to the read-back this tool returned.
+            slot_number: Only when find_care listed numbered times: the one they chose.
+                Leave 0 when confirming a time you already read back.
         """
         if not self.member:
             return "Not verified yet."
@@ -675,6 +743,12 @@ class MyAgent(Agent):
             return "A referral is required first. Ask to request it, then call request_referral."
         if o.get("live"):
             return self._request_live(o, confirmed)
+        if slot_number:
+            open_slots = o.get("open_slots", [])
+            if not 1 <= slot_number <= len(open_slots):
+                return "That isn't one of the times offered. Ask which of the listed times they'd like."
+            o = {**o, "slot": open_slots[slot_number - 1]}
+            self.offers = {**self.offers, option: o}
         if not confirmed:
             return (
                 f"Read back and ask: '{o['name']}, {cc.slot_words(o['slot'])}, at {o['address']}, about "
@@ -783,6 +857,29 @@ class MyAgent(Agent):
         self.hold_until = time.time() + HOLD_SECONDS
         board.emit("hold", self.call_id)
         return "Say only: 'Sure, take your time.' Then stay silent until they speak."
+
+    @function_tool
+    async def caller_without_id(
+        self, context: RunContext, situation: Literal["cant_find_id", "no_plan"]
+    ) -> str:
+        """The caller can't give their insurance ID, or says they have no plan with us.
+
+        Args:
+            situation: cant_find_id if they have a plan but not the ID with them; no_plan
+                if they aren't a member.
+        """
+        board.emit("rule", self.call_id, text=f"Asked to call back: {situation}")
+        if situation == "no_plan":
+            return (
+                "Kindly ask them to buy a Covered plan and call back once they have one. Do not say "
+                "where to buy one. Say a warm "
+                "goodbye and end the call."
+            )
+        return (
+            "Kindly say their insurance ID is on the front of their insurance card. If they can get it "
+            "now, call hold_on and wait. If they can't, ask them to call back once they have it, say a "
+            "warm goodbye and end the call."
+        )
 
     @function_tool
     async def compare_doctors(self, context: RunContext) -> str:
