@@ -49,7 +49,7 @@ async def run_covered_demo(broadcast) -> None:
     await a.verify_identity(None, "Alex Johnson", "MBR-12345")
     await say("assistant", "You're verified. What ZIP code do you want care in?")
     await say("user", "Oh seven three oh two.")
-    await a.find_care(None, "orthopedics", "knee pain", "07302")
+    await a.find_care(None, "orthopedics", "knee pain", "07302", any_time=True)
     await say(
         "assistant",
         "Your plan needs a referral from Dr. Lee first. Want me to request it?",

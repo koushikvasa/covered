@@ -513,6 +513,47 @@ def estimate_cost(member_id: str, provider_id: str) -> int:
     )
 
 
+def cost_reason(member_id: str, provider_id: str) -> str:
+    """Why this cost is what it is, so the agent never has to guess at a reason."""
+    m, p = MEMBERS[member_id], PROVIDER[provider_id]
+    if p["tier"] == 1:
+        return (
+            "their plan copay plus a practice fee"
+            if p.get("practice_fee")
+            else "their plan copay"
+        )
+    if m["deductible"] > m["deductible_met"]:
+        return "most or all of this goes toward their remaining deductible"
+    return "their share after their deductible is met"
+
+
+# ---------------------------------------------------------------- dates, times
+def parse_date(text: str) -> date | None:
+    iso = normalize_dob(text)
+    return date.fromisoformat(iso) if iso else None
+
+
+def parse_time(text: str) -> int | None:
+    """Minutes after midnight, from '14:30', '2:30 PM', '2 pm' or '9am'."""
+    cleaned = (text or "").strip().upper().replace(".", "")
+    for fmt in ("%H:%M", "%I:%M %p", "%I:%M%p", "%I %p", "%I%p"):
+        try:
+            parsed = datetime.strptime(cleaned, fmt)
+        except ValueError:
+            continue
+        return parsed.hour * 60 + parsed.minute
+    return None
+
+
+def day_words(day: date) -> str:
+    return f"{day.strftime('%A %B')} {day.day}"
+
+
+def clock_words(minutes: int) -> str:
+    hour = (minutes // 60) % 12 or 12
+    return f"{hour}:{minutes % 60:02d} {'PM' if minutes >= 720 else 'AM'}"
+
+
 # -------------------------------------------------------------------- search
 def resolve_zip(text: str | None, default: str) -> str | None:
     if not text:
@@ -556,6 +597,14 @@ def slot_words(slot: str) -> str:
     return f"{dt.strftime('%A %B')} {dt.day} at {t}"
 
 
+def _best_slot(slots: list[str], preferred_minutes: int | None) -> str:
+    """The earliest open day, at the time nearest what the caller asked for."""
+    if preferred_minutes is None:
+        return slots[0]
+    first_day = [s for s in slots if s[:10] == slots[0][:10]]
+    return min(first_day, key=lambda s: abs(parse_time(s[11:]) - preferred_minutes))
+
+
 def search(
     member_id: str,
     specialty: str,
@@ -565,12 +614,16 @@ def search(
     exclude_days: list[str] | None = None,
     time_of_day: str = "any",
     prefer_provider: str | None = None,
+    preferred_date: date | None = None,
+    preferred_minutes: int | None = None,
 ) -> dict:
     """In-network, in this ZIP (or nearby if nothing fits), really bookable.
     Returns offers (max 2, cheapest first) and skipped ghosts."""
     inc = {d.lower() for d in include_days or [] if d.lower() in DAYS}
     exc = {d.lower() for d in exclude_days or [] if d.lower() in DAYS}
     offers, ghosts, no_match = [], [], []
+    # upcoming_slots starts the day after this, so the preferred date itself is included.
+    start = preferred_date - timedelta(days=1) if preferred_date else None
     for p in PROVIDERS:
         if p["specialty"] != specialty:
             continue
@@ -583,7 +636,7 @@ def search(
             )
             continue
         slots = []
-        for s in upcoming_slots(p["id"], taken):
+        for s in upcoming_slots(p["id"], taken, start):
             wd = datetime.fromisoformat(s.split(" ")[0]).strftime("%A").lower()
             if (inc and wd not in inc) or wd in exc:
                 continue
@@ -609,7 +662,7 @@ def search(
                 "name": p["name"],
                 "miles": dist,
                 "address": p["address"],
-                "slot": slots[0],
+                "slot": _best_slot(slots, preferred_minutes),
                 "cost": estimate_cost(member_id, p["id"]),
                 "tier": p["tier"],
                 "background": background_words(p),
@@ -698,7 +751,12 @@ class Store:
         return b
 
     def add_request(
-        self, member_id: str, provider_id: str, cost: int, referral: str | None
+        self,
+        member_id: str,
+        provider_id: str,
+        cost: int,
+        referral: str | None,
+        preferred: str = "",
     ) -> dict:
         """An appointment request to a live provider: no time is claimed or held."""
         requests = self.data.setdefault("requests", [])
@@ -710,6 +768,7 @@ class Store:
             "member": member_id,
             "provider": provider_id,
             "slot": None,
+            "preferred": preferred,
             "cost": cost,
             "referral": referral,
             "at": time.time(),

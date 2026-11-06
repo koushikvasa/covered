@@ -6,12 +6,14 @@ turn-taking.
   .env.local
     AGENT_PROFILE = booking | screener | mine     (which agent answers)
     MODEL_PRESET  = budget  | quality             (see models.py)
+    REALTIME      = false   | true                (true: Gemini Live replaces STT, LLM, TTS)
     AGENT_NAME    = take2-agent                   (must match your dispatch rule)
 """
 
 import asyncio
 import logging
 import os
+from typing import Any
 
 from dotenv import load_dotenv
 from livekit.agents import (
@@ -32,7 +34,7 @@ from baton_agent import BatonAgent
 from baton_core import CAREGIVERS, CLIENTS
 from booking_agent import BookingAgent
 from covered_core import HAND_PROVIDERS, MEMBERS
-from models import load_models
+from models import Models, load_models
 from my_agent import MyAgent
 from screener_agent import ScreenerAgent
 
@@ -107,19 +109,16 @@ def handle_silence(session: AgentSession) -> None:
             task.add_done_callback(tasks.discard)
 
 
-server = AgentServer()
-
-
-@server.rtc_session(agent_name=AGENT_NAME)
-async def entrypoint(ctx: JobContext) -> None:
-    ctx.log_context_fields = {"room": ctx.room.name}
-    models = load_models()
-
-    session = AgentSession(
+def session_options(models: Models) -> dict[str, Any]:
+    """AgentSession settings for the pipeline chosen by REALTIME."""
+    if models.realtime:
+        # One model hears, thinks and speaks, and detects turns itself.
+        return {"llm": models.llm, "user_away_timeout": SILENCE_SECONDS}
+    return {
         # Ears: speech-to-text
-        stt=models.stt,
+        "stt": models.stt,
         # Bias transcription toward words it would otherwise misspell.
-        stt_context_options=STTContextOptions(
+        "stt_context_options": STTContextOptions(
             keyterms=[
                 "Take2",
                 "LiveKit",
@@ -143,11 +142,11 @@ async def entrypoint(ctx: JobContext) -> None:
             keyterm_detection={"enabled": True},
         ),
         # Brain: the LLM
-        llm=models.llm,
+        "llm": models.llm,
         # Voice: text-to-speech
-        tts=models.tts,
-        expressive=models.expressive,
-        turn_handling=TurnHandlingOptions(
+        "tts": models.tts,
+        "expressive": models.expressive,
+        "turn_handling": TurnHandlingOptions(
             # Decides when the caller has finished speaking, using both the words
             # and the audio (pitch, pauses). Much better than a fixed silence timer.
             turn_detection=inference.TurnDetector(),
@@ -156,8 +155,17 @@ async def entrypoint(ctx: JobContext) -> None:
             # Tools still wait for the confirmed turn, so a draft can't book anything.
             preemptive_generation={"enabled": True, "preemptive_tts": True},
         ),
-        user_away_timeout=SILENCE_SECONDS,
-    )
+        "user_away_timeout": SILENCE_SECONDS,
+    }
+
+
+server = AgentServer()
+
+
+@server.rtc_session(agent_name=AGENT_NAME)
+async def entrypoint(ctx: JobContext) -> None:
+    ctx.log_context_fields = {"room": ctx.room.name}
+    session = AgentSession(**session_options(load_models()))
 
     handle_silence(session)
 

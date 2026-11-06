@@ -62,7 +62,9 @@ def live_results(monkeypatch):
 async def test_hmo_specialist_full_flow(agent):
     a, c = agent, None
     # nothing before identity
-    assert "Not verified" in await a.find_care(c, "orthopedics", "knee pain", HOME_ZIP)
+    assert "Not verified" in await a.find_care(
+        c, "orthopedics", "knee pain", HOME_ZIP, any_time=True
+    )
     # a wrong ID never says which part was wrong
     r = await a.verify_identity(c, "Alex Johnson", "MBR-99999")
     assert "didn't match" in r and "Do not say which part" in r
@@ -70,7 +72,7 @@ async def test_hmo_specialist_full_flow(agent):
     assert r.startswith("Verified Alex Johnson")
 
     # HMO: specialist needs a referral first; code refuses to skip it
-    r = await a.find_care(c, "orthopedics", "knee pain", HOME_ZIP)
+    r = await a.find_care(c, "orthopedics", "knee pain", HOME_ZIP, any_time=True)
     assert "referral" in r and "Dr. Lena Lee" in r
     r = await a.request_referral(c, "orthopedics", "knee pain")
     assert "Wait for a clear yes" in r
@@ -117,7 +119,9 @@ async def test_someone_elses_id_is_refused(agent):
     r = await agent.verify_identity(None, "Jordan Blake", "MBR-12345")
     assert "not an authorized representative" in r
     assert agent.member is None
-    assert "Not verified" in await agent.find_care(None, "dermatology", "rash", "07302")
+    assert "Not verified" in await agent.find_care(
+        None, "dermatology", "rash", "07302", any_time=True
+    )
 
 
 async def test_verified_result_does_not_reveal_a_zip_to_assume(agent):
@@ -136,7 +140,7 @@ async def test_find_care_asks_for_a_zip_before_searching(agent):
 async def test_change_of_mind_and_place(agent):
     a, c = agent, None
     await a.verify_identity(c, *ALEX)
-    r = await a.find_care(c, "mental_health", "stress", HOME_ZIP)
+    r = await a.find_care(c, "mental_health", "stress", HOME_ZIP, any_time=True)
     assert "saw this provider before" in r  # remembers Dr. Patel
     first = a.offers["A"]["slot"]
     weekday = first.split(" ")[0]
@@ -159,7 +163,7 @@ async def test_rep_rules(agent):
     assert r.startswith("Verified Elena Garcia")
     assert a.relationship == "authorized_representative"
     # PPO: no referral needed for a specialist
-    r = await a.find_care(c, "orthopedics", "hip pain", "07306")
+    r = await a.find_care(c, "orthopedics", "hip pain", "07306", any_time=True)
     assert "Option A" in r
 
 
@@ -174,7 +178,7 @@ async def test_three_failures_lock(agent):
 async def test_live_zip_offers_real_providers_as_requests(agent, live_results):
     a, c = agent, None
     await a.verify_identity(c, *ALEX)
-    r = await a.find_care(c, "mental_health", "stress", LIVE_ZIP)
+    r = await a.find_care(c, "mental_health", "stress", LIVE_ZIP, any_time=True)
     assert "Option A: Dr. Test Provider" in r and "1 Sample Street" in r
     assert "NOT known" in r and "if in-network" in r  # no claim we can't back
     assert all(o["live"] and "slot" not in o for o in a.offers.values())
@@ -193,7 +197,7 @@ async def test_live_zip_offers_real_providers_as_requests(agent, live_results):
 async def test_live_request_is_only_sent_once(agent, live_results):
     a, c = agent, None
     await a.verify_identity(c, *ALEX)
-    await a.find_care(c, "mental_health", "stress", LIVE_ZIP)
+    await a.find_care(c, "mental_health", "stress", LIVE_ZIP, any_time=True)
     await a.book_appointment(c, "A", confirmed=True)
     first = a.booking["confirmation"]
     await a.book_appointment(c, "A", confirmed=True)
@@ -204,7 +208,7 @@ async def test_live_request_is_only_sent_once(agent, live_results):
 async def test_referral_rule_still_applies_to_live_providers(agent, live_results):
     a, c = agent, None
     await a.verify_identity(c, *ALEX)
-    r = await a.find_care(c, "orthopedics", "knee pain", LIVE_ZIP)
+    r = await a.find_care(c, "orthopedics", "knee pain", LIVE_ZIP, any_time=True)
     assert "referral" in r and a.offers == {}
     await a.request_referral(c, "orthopedics", "knee pain", confirmed=True)
     r = await a.find_care(c, "orthopedics", "knee pain")
@@ -220,7 +224,7 @@ async def test_live_registry_outage_never_breaks_the_call(agent, monkeypatch):
     monkeypatch.setattr(my_agent.live, "search_nearby", broken_search)
     a, c = agent, None
     await a.verify_identity(c, *ALEX)
-    r = await a.find_care(c, "mental_health", "stress", LIVE_ZIP)
+    r = await a.find_care(c, "mental_health", "stress", LIVE_ZIP, any_time=True)
     assert "isn't answering" in r and a.offers == {}
 
 
@@ -233,7 +237,7 @@ async def test_live_zip_with_no_providers(agent, monkeypatch):
     monkeypatch.setattr(my_agent.live, "search_nearby", no_results)
     a, c = agent, None
     await a.verify_identity(c, *ALEX)
-    r = await a.find_care(c, "mental_health", "stress", "59001")
+    r = await a.find_care(c, "mental_health", "stress", "59001", any_time=True)
     assert "No providers" in r and a.offers == {}
 
 
@@ -309,7 +313,7 @@ async def test_off_topic_steers_back_to_the_current_step(agent):
     await a.verify_identity(c, *ALEX)
     assert "what kind of care" in await a.handle_off_topic(c, "sports")
 
-    await a.find_care(c, "orthopedics", "knee pain", HOME_ZIP)
+    await a.find_care(c, "orthopedics", "knee pain", HOME_ZIP, any_time=True)
     assert "referral" in await a.handle_off_topic(c, "a joke")
 
     await a.request_referral(c, "orthopedics", "knee pain", confirmed=True)
@@ -333,7 +337,7 @@ async def test_compare_gives_backgrounds_without_ranking(agent):
     a, c = agent, None
     assert "find_care" in await a.compare_doctors(c)  # nothing offered yet
     await a.verify_identity(c, *ALEX)
-    await a.find_care(c, "mental_health", "stress", HOME_ZIP)
+    await a.find_care(c, "mental_health", "stress", HOME_ZIP, any_time=True)
 
     r = await a.compare_doctors(c)
 
@@ -345,7 +349,7 @@ async def test_compare_gives_backgrounds_without_ranking(agent):
 async def test_compare_live_providers_only_uses_registry_facts(agent, live_results):
     a, c = agent, None
     await a.verify_identity(c, *ALEX)
-    await a.find_care(c, "mental_health", "stress", LIVE_ZIP)
+    await a.find_care(c, "mental_health", "stress", LIVE_ZIP, any_time=True)
 
     r = await a.compare_doctors(c)
 
@@ -354,10 +358,182 @@ async def test_compare_live_providers_only_uses_registry_facts(agent, live_resul
     assert "Never say who is better" in r
 
 
+def _weekday_after(days_ahead: int) -> str:
+    from datetime import date, timedelta
+
+    day = date.today() + timedelta(days=days_ahead)
+    while day.weekday() >= 5:
+        day += timedelta(days=1)
+    return day.isoformat()
+
+
+async def test_asks_for_a_date_and_time_before_suggesting_doctors(agent):
+    a, c = agent, None
+    await a.verify_identity(c, *ALEX)
+
+    r = await a.find_care(c, "mental_health", "stress", HOME_ZIP)
+
+    assert "date and time" in r and "Option A" not in r and a.offers == {}
+    assert "date and time" in await a.handle_off_topic(c, "the weather")
+
+
+async def test_search_uses_the_date_and_time_the_caller_asked_for(agent):
+    a, c = agent, None
+    await a.verify_identity(c, *ALEX)
+    wanted = _weekday_after(14)
+
+    r = await a.find_care(
+        c,
+        "mental_health",
+        "stress",
+        HOME_ZIP,
+        preferred_date=wanted,
+        preferred_time="15:30",
+    )
+
+    assert "Option A" in r
+    patel = a.offers["A"]
+    assert patel["name"] == "Dr. Priya Patel"
+    assert patel["slot"][:10] >= wanted
+    assert patel["slot"].endswith("4:00 PM")  # closer to 3:30 PM than her 10:00 AM
+
+
+async def test_a_past_date_is_questioned_not_searched(agent):
+    a, c = agent, None
+    await a.verify_identity(c, *ALEX)
+    r = await a.find_care(
+        c, "mental_health", "stress", HOME_ZIP, preferred_date="2020-01-06"
+    )
+    assert "already passed" in r and a.offers == {}
+
+
+async def test_an_unreadable_date_is_asked_again(agent):
+    a, c = agent, None
+    await a.verify_identity(c, *ALEX)
+    r = await a.find_care(
+        c, "mental_health", "stress", HOME_ZIP, preferred_date="the fifth"
+    )
+    assert "date and time" in r and a.offers == {}
+
+
+async def test_date_and_time_are_remembered_when_the_zip_changes(agent):
+    a, c = agent, None
+    await a.verify_identity(c, *ALEX)
+    wanted = _weekday_after(14)
+    await a.find_care(c, "mental_health", "stress", HOME_ZIP, preferred_date=wanted)
+
+    r = await a.find_care(c, "mental_health", "stress", "11201")
+
+    assert "Sofia Reyes" in r
+    assert all(o["slot"][:10] >= wanted for o in a.offers.values())
+
+
+async def test_every_cost_comes_with_its_true_reason(agent):
+    a, c = agent, None
+    await a.verify_identity(c, *ALEX)
+
+    r = await a.find_care(c, "mental_health", "stress", HOME_ZIP, any_time=True)
+
+    assert "Dr. Hana Vasquez" in r and "toward their remaining deductible" in r
+    assert "All of these are in-network" in r
+
+
+async def test_live_request_passes_along_the_preferred_time(agent, live_results):
+    a, c = agent, None
+    await a.verify_identity(c, *ALEX)
+    wanted = _weekday_after(14)
+    await a.find_care(
+        c,
+        "mental_health",
+        "stress",
+        LIVE_ZIP,
+        preferred_date=wanted,
+        time_of_day="morning",
+    )
+
+    r = await a.book_appointment(c, "A")
+    assert "pass along" in r and "morning" in r
+    await a.book_appointment(c, "A", confirmed=True)
+    assert "morning" in a.store.data["requests"][-1]["preferred"]
+
+
+class FakeSession:
+    def __init__(self):
+        self.replies = []
+        self.interrupted = 0
+
+    def generate_reply(self, instructions=None):
+        self.replies.append(instructions)
+
+    def interrupt(self):
+        self.interrupted += 1
+
+
+def _realtime_agent(agent, monkeypatch):
+    import my_agent
+
+    session = FakeSession()
+    monkeypatch.setattr(my_agent.MyAgent, "session", property(lambda self: session))
+    return session
+
+
+def _transcript(text, is_final=True):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(transcript=text, is_final=is_final)
+
+
+@pytest.mark.parametrize(
+    ("said", "expected", "kind"),
+    [
+        ("I have chest pain right now", "nine one one", "emergency"),
+        ("I want to end my life", "nine eight eight", "crisis"),
+        ("book it under my husband's insurance", "improper request", "integrity"),
+    ],
+)
+async def test_realtime_transcripts_get_the_same_safety_checks(
+    agent, monkeypatch, said, expected, kind
+):
+    session = _realtime_agent(agent, monkeypatch)
+
+    agent._on_realtime_transcript(_transcript(said))
+
+    assert session.interrupted == 1
+    assert expected in session.replies[0]
+    assert agent.flags[-1]["kind"] == kind
+
+
+async def test_realtime_ignores_partial_and_harmless_transcripts(agent, monkeypatch):
+    session = _realtime_agent(agent, monkeypatch)
+
+    agent._on_realtime_transcript(_transcript("chest pain", is_final=False))
+    agent._on_realtime_transcript(_transcript("my knee hurts"))
+
+    assert session.replies == [] and session.interrupted == 0 and agent.flags == []
+
+
+async def test_realtime_slow_down_updates_the_instructions_once(agent, monkeypatch):
+    import asyncio
+
+    _realtime_agent(agent, monkeypatch)
+    updates = []
+
+    async def fake_update(text):
+        updates.append(text)
+
+    monkeypatch.setattr(agent, "update_instructions", fake_update)
+
+    agent._on_realtime_transcript(_transcript("can you slow down"))
+    agent._on_realtime_transcript(_transcript("please slow down again"))
+    await asyncio.sleep(0)
+
+    assert len(updates) == 1 and "slower pace" in updates[0]
+
+
 async def test_slot_taken_race(agent):
     a, c = agent, None
     await a.verify_identity(c, *ALEX)
-    await a.find_care(c, "mental_health", "stress", HOME_ZIP)
+    await a.find_care(c, "mental_health", "stress", HOME_ZIP, any_time=True)
     o = a.offers["A"]
     a.store.book("elena", o["id"], o["slot"], None)  # someone else books it first
     r = await a.book_appointment(c, "A", confirmed=True)

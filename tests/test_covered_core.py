@@ -180,6 +180,47 @@ def test_directory_is_the_same_on_every_run():
     ]
 
 
+def test_parse_time_understands_spoken_and_clock_forms():
+    assert cc.parse_time("14:30") == 14 * 60 + 30
+    assert cc.parse_time("2:30 PM") == 14 * 60 + 30
+    assert cc.parse_time("2 pm") == 14 * 60
+    assert cc.parse_time("9am") == 9 * 60
+    assert cc.parse_time("sometime") is None
+    assert cc.parse_time("") is None
+
+
+def test_search_starts_from_the_preferred_date_and_nearest_time(store):
+    from datetime import date, timedelta
+
+    wanted = date.today() + timedelta(days=21)
+    offers = cc.search(
+        "alex",
+        "mental_health",
+        "07302",
+        store.taken,
+        prefer_provider="dr-patel",
+        preferred_date=wanted,
+        preferred_minutes=16 * 60,
+    )["offers"]
+    assert offers[0]["id"] == "dr-patel"
+    assert offers[0]["slot"][:10] >= wanted.isoformat()
+    assert offers[0]["slot"].endswith("4:00 PM")
+
+
+def test_cost_reason_explains_how_the_cost_was_worked_out():
+    assert "deductible" in cc.cost_reason("alex", "dr-kim")  # $350 left to pay
+    assert "after their deductible" in cc.cost_reason("elena", "dr-kim")  # already met
+    assert cc.cost_reason("alex", "dr-reyes") == "their plan copay plus a practice fee"
+    assert cc.cost_reason("alex", "dr-patel") == "their plan copay"
+    for p in cc.PROVIDERS:
+        assert "network" not in cc.cost_reason("alex", p["id"])
+
+
+def test_request_records_the_preferred_time(store):
+    r = store.add_request("alex", "npi-1", 30, None, "Tuesday morning")
+    assert r["preferred"] == "Tuesday morning"
+
+
 def test_detectors():
     assert cc.detect_crisis("honestly I want to end my life")
     assert cc.detect_crisis("I'm stressed about work") is None

@@ -11,9 +11,11 @@ Design: the LLM listens and talks; covered_core.py decides.
   - Every caller turn is checked for emergency, crisis and fraud requests.
 """
 
+import asyncio
 import logging
 import re
 import time
+from datetime import date
 from typing import Literal
 
 from livekit.agents import Agent, RunContext, function_tool, get_job_context, llm
@@ -30,6 +32,13 @@ HOLD_SECONDS = 180
 # From this many off-topic questions on, also offer the caller a person.
 OFF_TOPIC_LIMIT = 3
 MAX_LIVE_OFFERS = 2
+SLOWER_PACE_NOTE = (
+    "Caller asked for a slower pace: give one detail per sentence, very short."
+)
+ASK_FOR_TIMING = (
+    "Kindly ask what date and time would suit them, or whether any time works, then call "
+    "find_care again with their answer. Do not suggest doctors yet."
+)
 # Delivery tags the LLM adds for expressive TTS; never show them on the board.
 DELIVERY_TAG = re.compile(r"</?expr\b[^>]*>")
 Specialty = Literal[
@@ -67,7 +76,8 @@ Use plain words. Explain a term only if it matters ("in-network means your plan 
    saying it's to protect the account. If they call for someone else, ask for that
    person's insurance ID. Then call verify_identity.
 3. Map their reason to a type of provider; never diagnose. If unsure, choose primary_care.
-   Ask for the ZIP code where they want care; never assume one. Then call find_care.
+   Ask for the ZIP code where they want care; never assume one. Then ask what date and
+   time suit them, one question at a time. Then call find_care.
 4. Do exactly what each tool result tells you. Offer at most two options, one sentence each.
 5. Before requesting a referral or booking, read the details back and ask yes or no.
    Only after a clear yes, call the tool again with confirmed true. Silence is not a yes.
@@ -131,6 +141,8 @@ class MyAgent(Agent):
         self.prefs = {"slower_pace": False, "repeat_requested": False}
         self.hold_until = 0.0
         self.off_topic_count = 0
+        self.timing: dict | None = None  # the date and time the caller wants
+        self._realtime_tasks: set[asyncio.Task] = set()
         self._ended = False
 
     # ------------------------------------------------------------- helpers
@@ -149,6 +161,8 @@ class MyAgent(Agent):
             and not self.store.has_referral(self.member, self.specialty)
         ):
             return "Then ask if they want you to request the referral."
+        if self.zip and self.specialty and not self.timing:
+            return "Then ask what date and time would suit them."
         if self.offers:
             return "Then ask which option they'd like."
         return "Then ask what kind of care they need and their ZIP code, whichever you're missing."
@@ -237,6 +251,8 @@ class MyAgent(Agent):
     # ----------------------------------------------------------- lifecycle
     async def on_enter(self) -> None:
         self.session.on("conversation_item_added", self._on_item)
+        if isinstance(self.session.llm, llm.RealtimeModel):
+            self.session.on("user_input_transcribed", self._on_realtime_transcript)
         board.emit("call_started", self.call_id)
         self.phone = _caller_phone()
         await self.session.generate_reply(
@@ -257,44 +273,31 @@ class MyAgent(Agent):
                 text=" ".join(DELIVERY_TAG.sub("", text).split()),
             )
 
-    async def on_user_turn_completed(
-        self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
-    ) -> None:
-        text = new_message.text_content or ""
+    def _note_requests(self, text: str) -> None:
+        """Record what the caller asked of the conversation itself."""
         self.hold_until = 0.0
         low = text.lower()
         if any(p in low for p in ("slow down", "too fast", "slower")):
             self.prefs["slower_pace"] = True
-        if self.prefs["slower_pace"]:
-            # turn_ctx edits only last one reply, so repeat this on every turn.
-            turn_ctx.add_message(
-                role="system",
-                content="Caller asked for a slower pace: give one detail per sentence, very short.",
-            )
         if any(p in low for p in ("repeat", "say that again", "what was that")):
             self.prefs["repeat_requested"] = True
+
+    def _safety_note(self, text: str) -> str | None:
+        """Flags an emergency, crisis or improper request, and says how to respond."""
         if cc.detect_emergency(text):
             self._flag("emergency", "emergency", "Possible medical emergency", text)
-            turn_ctx.add_message(
-                role="system",
-                content=(
-                    "SAFETY CHECK: possible emergency. Reply only: 'Please hang up and call nine one one now.' "
-                    "Then end the call."
-                ),
+            return (
+                "SAFETY CHECK: possible emergency. Reply only: 'Please hang up and call nine one one now.' "
+                "Then end the call."
             )
-            return
         if cc.detect_crisis(text):
             self._flag("crisis", "emergency", "Caller mentioned self-harm", text)
-            turn_ctx.add_message(
-                role="system",
-                content=(
-                    "SAFETY CHECK: the caller may be in crisis. Say warmly and briefly: 'I'm really glad you told me. "
-                    "You can call or text nine eight eight any time to talk to someone now, or call nine one one if "
-                    "you're in danger.' Ask if they're safe right now. Do not end the call. If they say they're safe, "
-                    "offer to keep helping them find a therapist."
-                ),
+            return (
+                "SAFETY CHECK: the caller may be in crisis. Say warmly and briefly: 'I'm really glad you told me. "
+                "You can call or text nine eight eight any time to talk to someone now, or call nine one one if "
+                "you're in danger.' Ask if they're safe right now. Do not end the call. If they say they're safe, "
+                "offer to keep helping them find a therapist."
             )
-            return
         if cc.detect_integrity(text):
             self._flag(
                 "integrity",
@@ -302,13 +305,41 @@ class MyAgent(Agent):
                 "Asked to misuse insurance or misstate facts",
                 text,
             )
-            turn_ctx.add_message(
-                role="system",
-                content=(
-                    "SAFETY CHECK: improper request. Decline in one short, calm sentence: you can only book using the "
-                    "verified member's own plan and the real reason for the visit. Then offer what you can do."
-                ),
+            return (
+                "SAFETY CHECK: improper request. Decline in one short, calm sentence: you can only book using the "
+                "verified member's own plan and the real reason for the visit. Then offer what you can do."
             )
+        return None
+
+    async def on_user_turn_completed(
+        self, turn_ctx: llm.ChatContext, new_message: llm.ChatMessage
+    ) -> None:
+        text = new_message.text_content or ""
+        self._note_requests(text)
+        if self.prefs["slower_pace"]:
+            # turn_ctx edits only last one reply, so repeat this on every turn.
+            turn_ctx.add_message(role="system", content=SLOWER_PACE_NOTE)
+        safety = self._safety_note(text)
+        if safety:
+            turn_ctx.add_message(role="system", content=safety)
+
+    def _on_realtime_transcript(self, ev) -> None:
+        """A realtime model detects turns itself, so the SDK never calls
+        on_user_turn_completed. Run the same checks on its final transcripts."""
+        if not ev.is_final:
+            return
+        was_slow = self.prefs["slower_pace"]
+        self._note_requests(ev.transcript)
+        if self.prefs["slower_pace"] and not was_slow:
+            task = asyncio.create_task(
+                self.update_instructions(f"{self.instructions}\n{SLOWER_PACE_NOTE}")
+            )
+            self._realtime_tasks.add(task)
+            task.add_done_callback(self._realtime_tasks.discard)
+        safety = self._safety_note(ev.transcript)
+        if safety:
+            self.session.interrupt()
+            self.session.generate_reply(instructions=safety)
 
     # --------------------------------------------------------------- tools
     @function_tool
@@ -373,10 +404,13 @@ class MyAgent(Agent):
         include_days: list[str] | None = None,
         exclude_days: list[str] | None = None,
         time_of_day: Literal["any", "morning", "afternoon"] = "any",
+        preferred_date: str = "",
+        preferred_time: str = "",
+        any_time: bool = False,
     ) -> str:
-        """Find in-network providers with real open times near the member. Call this as
-        soon as you know what kind of care they need; do not ask about days or times
-        first. Call again whenever the caller changes the day, time or place.
+        """Find in-network providers with real open times near the member. Call this once
+        you know what care they need, their ZIP code, and what date and time suit them.
+        Call again whenever the caller changes the day, time or place.
 
         Args:
             specialty: primary_care, mental_health (therapist, counseling), orthopedics
@@ -392,6 +426,10 @@ class MyAgent(Agent):
             include_days: Weekday names they asked for, e.g. ["thursday"].
             exclude_days: Weekday names they can't do.
             time_of_day: any, morning, or afternoon.
+            preferred_date: The date they want as YYYY-MM-DD, worked out from today's date.
+                If they give only a day of the month, use the next time it falls.
+            preferred_time: The time they want, e.g. 14:30.
+            any_time: True only if they said any date and time works.
         """
         if not self.member:
             return "Not verified yet. Verify identity first; share nothing."
@@ -400,6 +438,16 @@ class MyAgent(Agent):
         if not z:
             return "Ask for the five-digit ZIP code where they want care, then call find_care with it."
         self.zip = z
+        timing_problem = self._update_timing(
+            preferred_date,
+            preferred_time,
+            include_days,
+            exclude_days,
+            time_of_day,
+            any_time,
+        )
+        if timing_problem:
+            return timing_problem
         pcp = cc.PROVIDER[cc.MEMBERS[self.member]["pcp"]]["name"]
         if cc.needs_referral(self.member, specialty) and not self.store.has_referral(
             self.member, specialty
@@ -415,6 +463,8 @@ class MyAgent(Agent):
                 "Want me to request it and find you a time?' If yes, call request_referral with confirmed true, "
                 "then find_care again."
             )
+        if not self.timing:
+            return ASK_FOR_TIMING
         if z not in cc.ZIPS:
             return await self._find_live(specialty, z)
         prev = cc.MEMBERS[self.member]["last_seen"].get(specialty)
@@ -423,10 +473,12 @@ class MyAgent(Agent):
             specialty,
             z,
             self.store.taken,
-            include_days,
-            exclude_days,
-            time_of_day,
+            self.timing["include_days"],
+            self.timing["exclude_days"],
+            self.timing["time_of_day"],
             prev,
+            self.timing["date"],
+            self.timing["minutes"],
         )
         self.store.report_ghosts(res["ghosts"])
         self.offers = dict(zip("AB", res["offers"]))
@@ -452,9 +504,15 @@ class MyAgent(Agent):
                 if o["id"] == prev
                 else ""
             )
+            wanted = self.timing["date"]
+            closest = (
+                " (the closest opening to the date they asked for; say so)"
+                if wanted and o["slot"][:10] != wanted.isoformat()
+                else ""
+            )
             lines.append(
-                f"Option {k}: {o['name']}, {dist} away, {cc.slot_words(o['slot'])}, "
-                f"their cost about {o['cost']} dollars{again}."
+                f"Option {k}: {o['name']}, {dist} away, {cc.slot_words(o['slot'])}{closest}, "
+                f"their cost about {o['cost']} dollars, {cc.cost_reason(self.member, o['id'])}{again}."
             )
         skipped = (
             f" {len(res['ghosts'])} outdated listings were skipped."
@@ -465,8 +523,62 @@ class MyAgent(Agent):
             " ".join(lines)
             + skipped
             + " In two short sentences total, give each option's name, day, time and cost, then ask which one."
-            " Leave out distance and skipped listings. If a cost is high, say why in a few words."
+            " Leave out distance and skipped listings. All of these are in-network. If a cost is high, "
+            "explain it using only the reason given here."
         )
+
+    def _update_timing(
+        self,
+        preferred_date: str,
+        preferred_time: str,
+        include_days: list[str] | None,
+        exclude_days: list[str] | None,
+        time_of_day: str,
+        any_time: bool,
+    ) -> str | None:
+        """Remember the date and time the caller asked for. Returns what to say instead
+        of searching if the date can't be used; code decides, so no date is guessed."""
+        stated = (
+            preferred_date,
+            preferred_time,
+            include_days,
+            exclude_days,
+            time_of_day != "any",
+            any_time,
+        )
+        if not any(stated):
+            return None  # keep what they said earlier, if anything
+        wanted = None
+        if preferred_date:
+            wanted = cc.parse_date(preferred_date)
+            if not wanted:
+                return ASK_FOR_TIMING
+            if wanted < date.today():
+                return (
+                    f"{cc.day_words(wanted)} has already passed. Say so kindly and ask what date and "
+                    "time would suit them. Do not suggest doctors yet."
+                )
+        self.timing = {
+            "date": wanted,
+            "minutes": cc.parse_time(preferred_time),
+            "include_days": include_days,
+            "exclude_days": exclude_days,
+            "time_of_day": time_of_day,
+        }
+        return None
+
+    def _timing_words(self) -> str:
+        """What the caller asked for, in words an office could act on."""
+        t = self.timing or {}
+        words = []
+        if t.get("date"):
+            words.append(cc.day_words(t["date"]))
+        words += [day.title() for day in t.get("include_days") or []]
+        if t.get("time_of_day", "any") != "any":
+            words.append(f"in the {t['time_of_day']}")
+        if t.get("minutes") is not None:
+            words.append(f"around {cc.clock_words(t['minutes'])}")
+        return " ".join(words)
 
     async def _find_live(self, specialty: str, zip_code: str) -> str:
         """Real providers from the public registry, for a ZIP outside the demo network.
@@ -598,14 +710,22 @@ class MyAgent(Agent):
 
     def _request_live(self, o: dict, confirmed: bool) -> str:
         """Send an appointment request to a live provider, after a read-back and yes."""
+        preference = self._timing_words()
         if not confirmed:
+            pass_along = (
+                f" I'll pass along that you'd like {preference}." if preference else ""
+            )
             return (
                 f"Read back and ask: 'I'd request an appointment with {o['name']} at {o['address']}. The "
                 f"office calls you to set the time, and it's about {o['cost']} dollars if they're in your "
-                "network. Shall I send it?' Wait for a clear yes."
+                f"network.{pass_along} Shall I send it?' Wait for a clear yes."
             )
         self.booking = self.store.add_request(
-            self.member, o["id"], o["cost"], self.referral and self.referral["id"]
+            self.member,
+            o["id"],
+            o["cost"],
+            self.referral and self.referral["id"],
+            preference,
         )
         conf = " ".join(self.booking["confirmation"].replace("-", ""))
         board.emit(

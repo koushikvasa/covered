@@ -16,6 +16,7 @@ public NPI Registry and sends a request, without claiming a time it can't back.
 # .env.local
 AGENT_PROFILE=mine          # Covered (baton = the backup idea)
 MODEL_PRESET=budget
+REALTIME=false              # true: Gemini Live replaces STT, LLM and TTS (costs the most)
 AGENT_NAME=take2-agent
 
 uv run board/server.py                  # terminal 1 → http://localhost:8787
@@ -57,6 +58,9 @@ lk agent simulate text --scenarios scenarios-covered.yaml   # before milestones 
 | Only providers with a real open slot are offered; ghosts skipped and reported | `covered_core.search` |
 | Max 2 options from the caller's own ZIP (nearby only if nothing fits), cheapest first; returning patients get their old provider first | `search` |
 | Comparing doctors gives background facts only, never who is better | `compare_doctors` |
+| No doctors until the caller gives a date and time (or says any); past dates are questioned; nearest slot wins | `find_care`, `_update_timing`, `search` |
+| Every cost comes with its true reason, so the agent can't invent one | `cost_reason` |
+| Safety checks run in both pipelines: `on_user_turn_completed`, or final transcripts when `REALTIME=true` | `_on_realtime_transcript` |
 | Member's own cost. Tier 1: plan copay + practice fee. Tier 2: deductible left, then coinsurance on the allowed amount | `estimate_cost` |
 | HMO specialist: no booking until a referral is requested (with a yes) | `find_care`, `book_appointment` |
 | Booking only an offered option, only after read-back + yes, never double-booked | `book_appointment`, `Store.book` |
