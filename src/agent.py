@@ -28,7 +28,10 @@ from livekit.agents import (
 )
 from livekit.plugins import ai_coustics
 
+from baton_agent import BatonAgent
+from baton_core import CAREGIVERS, CLIENTS
 from booking_agent import BookingAgent
+from covered_core import MEMBERS, PROVIDERS
 from models import load_models
 from my_agent import MyAgent
 from screener_agent import ScreenerAgent
@@ -40,7 +43,8 @@ load_dotenv(".env.local")
 AGENTS: dict[str, type[Agent]] = {
     "booking": BookingAgent,
     "screener": ScreenerAgent,
-    "mine": MyAgent,
+    "mine": MyAgent,  # Covered
+    "baton": BatonAgent,
 }
 
 AGENT_NAME = os.getenv("AGENT_NAME", "take2-agent")
@@ -67,6 +71,17 @@ def handle_silence(session: AgentSession) -> None:
 
     async def check_in() -> None:
         nonlocal check_ins
+        # Baton: the caller said "hold on". Stay silent until the hold expires.
+        agent = session.current_agent
+        if getattr(agent, "on_hold", lambda: False)():
+            await asyncio.sleep(agent.hold_remaining())
+            if session.user_state != "away" or agent.on_hold():
+                return
+            agent.hold_until = 0.0
+            await session.generate_reply(
+                instructions="The caller has been on hold a while. In a few words, ask if they're back."
+            )
+            return
         check_ins += 1
         if check_ins <= MAX_CHECK_INS:
             await session.generate_reply(
@@ -76,6 +91,9 @@ def handle_silence(session: AgentSession) -> None:
             await session.generate_reply(
                 instructions="The caller is not responding. Say a short, polite goodbye."
             )
+            on_end = getattr(session.current_agent, "on_call_end", None)
+            if on_end:
+                on_end()
             session.shutdown()
 
     @session.on("user_state_changed")
@@ -102,7 +120,23 @@ async def entrypoint(ctx: JobContext) -> None:
         stt=models.stt,
         # Bias transcription toward words it would otherwise misspell.
         stt_context_options=STTContextOptions(
-            keyterms=["Take2", "LiveKit"],
+            keyterms=[
+                "Take2",
+                "LiveKit",
+                "Baton",
+                # Baton: client and medication names, so STT doesn't mangle them.
+                *(c["name"] for c in CLIENTS.values()),
+                *(m["name"] for c in CLIENTS.values() for m in c["meds"]),
+                *(g["name"] for g in CAREGIVERS.values()),
+                # Covered: provider and member names, plan words.
+                "Covered",
+                "in-network",
+                "copay",
+                "deductible",
+                "referral",
+                *(p["name"] for p in PROVIDERS),
+                *(m["full_name"] for m in MEMBERS.values()),
+            ],
             keyterm_detection={"enabled": True},
         ),
         # Brain: the LLM
@@ -122,14 +156,20 @@ async def entrypoint(ctx: JobContext) -> None:
 
     handle_silence(session)
 
+    agent = pick_agent()
+
     async def log_usage() -> None:
         # Shows model usage per call so you can see what you're spending.
         logger.info("session usage: %s", session.usage)
+        # Baton: a dropped call keeps its partial note, marked incomplete.
+        on_end = getattr(agent, "on_call_end", None)
+        if on_end:
+            on_end()
 
     ctx.add_shutdown_callback(log_usage)
 
     await session.start(
-        agent=pick_agent(),
+        agent=agent,
         room=ctx.room,
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(

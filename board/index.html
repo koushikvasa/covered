@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Covered — Care Line</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#f3f4f1; --card:#fff; --ink:#14171c; --muted:#69707b; --line:#e3e5df;
+  --brand:#1d4ed8; --brand-soft:#e6edfd;
+  --ok:#15803d; --ok-soft:#dcfce7; --warn:#b45309; --warn-soft:#fef3c7;
+  --bad:#b91c1c; --bad-soft:#fee2e2; --ghost:#9aa0a8;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Inter Tight",system-ui,sans-serif;background:var(--bg);color:var(--ink);padding:20px 24px 28px;min-height:100vh}
+header{display:flex;align-items:center;gap:14px;margin-bottom:18px}
+.logo{width:34px;height:34px;border-radius:10px;background:var(--brand);display:grid;place-items:center}
+.logo svg{width:20px;height:20px}
+h1{font-size:21px;font-weight:700;letter-spacing:-.02em}
+h1 span{font-weight:500;color:var(--muted)}
+.pill{display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:999px;background:var(--card);border:1px solid var(--line);font-size:14px;font-weight:500;color:var(--muted)}
+.dot{width:8px;height:8px;border-radius:50%;background:#c4c7c0}
+.pill.live{color:var(--ink)} .pill.live .dot{background:#dc2626;animation:p 1.2s infinite}
+.pill.hold .dot{background:var(--warn)}
+@keyframes p{50%{opacity:.25}}
+#timer{margin-left:auto;font-family:"IBM Plex Mono",monospace;color:var(--muted);font-size:16px}
+.grid{display:grid;grid-template-columns:290px minmax(0,1fr) 340px;gap:16px;align-items:start}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+.card+.card{margin-top:16px}
+h2{font-size:11.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);font-weight:600;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center}
+.empty{color:var(--muted);font-size:14.5px;padding:18px 0;text-align:center}
+.badge{font-size:11.5px;font-weight:600;padding:3px 8px;border-radius:7px;white-space:nowrap}
+.b-ok{background:var(--ok-soft);color:var(--ok)} .b-warn{background:var(--warn-soft);color:var(--warn)}
+.b-bad{background:var(--bad-soft);color:var(--bad)} .b-grey{background:#eef0f2;color:var(--muted)}
+.mname{font-size:21px;font-weight:700;letter-spacing:-.02em}
+.kv{display:grid;grid-template-columns:96px 1fr;gap:6px 8px;font-size:14px;margin-top:12px}
+.kv dt{color:var(--muted)} .kv dd{font-weight:500}
+.meter{height:8px;background:#eceee9;border-radius:6px;overflow:hidden;margin-top:6px}
+.meter i{display:block;height:100%;background:var(--brand)}
+.small{font-size:12.5px;color:var(--muted);margin-top:4px}
+pre{font-family:"IBM Plex Mono",monospace;font-size:11px;line-height:1.45;background:#f6f7f4;border-radius:8px;padding:10px;max-height:300px;overflow:auto;white-space:pre-wrap}
+.rule{background:var(--warn-soft);color:var(--warn);border-radius:10px;padding:10px 12px;font-size:14px;font-weight:500;margin-bottom:12px;animation:in .3s}
+.rule.ok{background:var(--ok-soft);color:var(--ok)}
+.prov{display:grid;grid-template-columns:30px 1fr auto;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line);animation:in .3s}
+.prov:last-child{border:0}
+.tag{width:28px;height:28px;border-radius:8px;background:var(--brand);color:#fff;font-weight:700;display:grid;place-items:center;font-size:14px}
+.pname{font-weight:600;font-size:15.5px} .pmeta{color:var(--muted);font-size:13px;margin-top:2px}
+.cost{text-align:right} .cost b{font-size:22px;font-weight:700;letter-spacing:-.02em;display:block}
+.cost small{font-size:12px;color:var(--muted)}
+.prov.ghost .pname{color:var(--ghost);text-decoration:line-through}
+.prov.ghost .tag{background:#e8e9e6;color:var(--ghost)}
+.prov.nomatch .tag{background:#eef0f2;color:var(--muted)}
+.booked{margin-top:16px;border-radius:14px;padding:18px;background:var(--ok-soft);border:1px solid #b8e7c8;display:none;animation:in .4s}
+.booked.show{display:block}
+.booked .conf{font-family:"IBM Plex Mono",monospace;font-size:24px;font-weight:500;color:var(--ok);letter-spacing:.06em}
+.booked .what{font-size:17px;font-weight:600;margin-top:6px}
+.booked .where{color:var(--muted);font-size:14px;margin-top:2px}
+.alert{border-left:4px solid;padding:10px 12px;border-radius:8px;margin-bottom:10px;font-size:14px;animation:in .3s}
+.alert b{display:block;font-weight:600;margin-bottom:2px}
+.alert i{color:var(--muted);font-size:12.5px}
+.a-review{border-color:var(--warn);background:var(--warn-soft)}
+.a-emergency{border-color:var(--bad);background:var(--bad-soft)}
+.a-info{border-color:var(--brand);background:var(--brand-soft)}
+@keyframes in{from{opacity:0;transform:translateY(4px)}}
+#chat{max-height:44vh;overflow-y:auto;display:flex;flex-direction:column;gap:8px}
+.msg{max-width:88%;padding:8px 12px;border-radius:12px;font-size:14px;line-height:1.4;animation:in .25s}
+.assistant{background:#eef0f2;align-self:flex-start;border-bottom-left-radius:3px}
+.user{background:var(--brand-soft);align-self:flex-end;border-bottom-right-radius:3px}
+.sys{align-self:center;font-size:12px;color:var(--muted)}
+.stat{display:flex;gap:10px;margin-bottom:14px}
+.stat div{flex:1;background:#f6f7f4;border-radius:10px;padding:10px 12px}
+.stat b{font-size:22px;font-weight:700;display:block} .stat span{font-size:12px;color:var(--muted)}
+@media (max-width:1150px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 5-3.5 8.5-7 10-3.5-1.5-7-5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg></div>
+  <h1>Covered <span>· Care Line</span></h1>
+  <div class="pill" id="pill"><span class="dot"></span><span id="pillText">Waiting for a call</span></div>
+  <div id="timer">00:00</div>
+</header>
+
+<div class="grid">
+  <aside>
+    <div class="card"><h2>Member <span id="verify"></span></h2><div id="member"><div class="empty">Not verified yet</div></div></div>
+    <div class="card"><h2>Intake record</h2><pre id="intake">—</pre></div>
+  </aside>
+  <main>
+    <div class="card">
+      <h2>Care search <span id="searchMeta"></span></h2>
+      <div class="stat" id="stats" style="display:none">
+        <div><b id="sBook">0</b><span>Bookable now</span></div>
+        <div><b id="sGhost">0</b><span>Ghost listings skipped</span></div>
+        <div><b id="sCost">—</b><span>Lowest cost to you</span></div>
+      </div>
+      <div id="rules"></div>
+      <div id="results"><div class="empty">When the caller says what care they need, in-network options with real open times appear here.</div></div>
+      <div class="booked" id="booked"></div>
+    </div>
+  </main>
+  <aside>
+    <div class="card"><h2>Alerts</h2><div id="alerts"><div class="empty" style="padding:8px 0">No alerts</div></div></div>
+    <div class="card"><h2>Transcript</h2><div id="chat"></div></div>
+  </aside>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let tick = null, start = 0, ghostsSeen = new Set(), done = false;
+const mi = m => m < 0.5 ? "under 1 mi" : m + " mi";
+function pill(t, cls){ $("#pillText").textContent = t; $("#pill").className = "pill " + (cls||""); }
+function timer(on){ clearInterval(tick); if(!on) return; start = Date.now();
+  tick = setInterval(()=>{const s=(Date.now()-start)/1000|0;$("#timer").textContent=`${String(s/60|0).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`},500); }
+function msg(role, text){ const d=document.createElement("div"); d.className="msg "+role; d.textContent=text; $("#chat").appendChild(d); $("#chat").scrollTop=1e9; }
+function alertBox(level, title, text, quote){
+  if($("#alerts .empty")) $("#alerts").innerHTML="";
+  const d=document.createElement("div"); d.className="alert a-"+level;
+  d.innerHTML=`<b>${esc(title)}</b>${esc(text)}${quote?`<br><i>“${esc(quote)}”</i>`:""}`; $("#alerts").prepend(d);
+}
+function when(slot){ const [d,t]=slot.split(" ").length?[slot.slice(0,10),slot.slice(11)]:[slot,""];
+  const dt=new Date(d+"T12:00:00"); return dt.toLocaleDateString([], {weekday:"short", month:"short", day:"numeric"})+" · "+t; }
+
+const on = {
+  call_started(){ ghostsSeen.clear(); done = false; $("#chat").innerHTML=""; $("#alerts").innerHTML='<div class="empty" style="padding:8px 0">No alerts</div>';
+    $("#member").innerHTML='<div class="empty">Verifying caller…</div>'; $("#verify").innerHTML='<span class="badge b-grey">Pending</span>';
+    $("#results").innerHTML='<div class="empty">Waiting for the caller\'s need…</div>'; $("#rules").innerHTML=""; $("#stats").style.display="none";
+    $("#booked").className="booked"; $("#intake").textContent="—"; $("#searchMeta").textContent=""; pill("Live call","live"); timer(true); },
+  transcript(e){ msg(e.role==="user"?"user":"assistant", e.text); if(!done && !$("#pill").classList.contains("hold")) pill("Live call","live"); },
+  identity_failed(e){ $("#verify").innerHTML=`<span class="badge b-bad">Not matched ${e.attempts}/3</span>`; msg("sys","Verification failed"); },
+  member(e){ const m=e.member, pct=Math.min(100, m.deductible_met/m.deductible*100);
+    $("#verify").innerHTML='<span class="badge b-ok">Verified ✓</span>';
+    $("#member").innerHTML=`<div class="mname">${esc(m.name)}</div><div class="small">${esc(m.member_id)} · ${esc(m.how)}${m.relationship!=="self"?` · caller: ${esc(m.caller)} (authorized rep)`:""}</div>
+      <dl class="kv"><dt>Plan</dt><dd>${esc(m.plan)}</dd><dt>Home</dt><dd>${esc(m.area)} ${esc(m.zip)}</dd><dt>Primary care</dt><dd>${esc(m.pcp)}</dd></dl>
+      <div class="small" style="margin-top:12px">Deductible: $${m.deductible_met} of $${m.deductible} met</div><div class="meter"><i style="width:${pct}%"></i></div>`; },
+  rule(e){ $("#rules").innerHTML=`<div class="rule">Plan rule: ${esc(e.text)}</div>`; },
+  referral(e){ $("#rules").innerHTML=`<div class="rule ok">Referral ${esc(e.referral.id)} requested from ${esc(e.referral.pcp)}</div>`; },
+  search(e){
+    $("#searchMeta").textContent = `${e.specialty} · near ${e.area}`;
+    $("#stats").style.display="flex"; $("#sBook").textContent=e.offers.length; $("#sGhost").textContent=e.ghosts.length;
+    $("#sCost").textContent = e.offers.length ? "$"+Math.min(...e.offers.map(o=>o.cost)) : "—";
+    const rows = e.offers.map((o,i)=>`<div class="prov"><div class="tag">${"AB"[i]}</div><div><div class="pname">${esc(o.name)}</div>
+        <div class="pmeta">${mi(o.miles)} · ${esc(when(o.slot))} · Tier ${o.tier}</div></div><div class="cost"><b>$${o.cost}</b><small>your cost</small></div></div>`)
+      .concat(e.ghosts.map(g=>`<div class="prov ghost"><div class="tag">✕</div><div><div class="pname">${esc(g.name)}</div>
+        <div class="pmeta">Listed in directory · ${esc(g.reason)}</div></div><span class="badge b-bad">Ghost · not offered</span></div>`))
+      .concat(e.no_match.map(g=>`<div class="prov nomatch"><div class="tag">–</div><div><div class="pname">${esc(g.name)}</div>
+        <div class="pmeta">${esc(g.reason)}</div></div><span class="badge b-grey">No fit</span></div>`));
+    $("#results").innerHTML = rows.join("") || '<div class="empty">No in-network openings match</div>';
+    e.ghosts.forEach(g=>{ if(!ghostsSeen.has(g.id)){ ghostsSeen.add(g.id); alertBox("info","Ghost listing reported", `${g.name}: ${g.reason}`); }});
+  },
+  booking(e){ const b=e.booking; $("#booked").className="booked show";
+    $("#booked").innerHTML=`<div class="small" style="color:var(--ok);font-weight:600">BOOKED</div><div class="conf">${esc(b.confirmation)}</div>
+      <div class="what">${esc(b.provider_name)} · ${esc(b.when)}</div><div class="where">${esc(b.address)} · about $${b.cost} to you${b.referral?` · referral ${esc(b.referral)} pending`:""}</div>`;
+    done = true; pill("Booked"); },
+  intake(e){ $("#intake").textContent = JSON.stringify(e.record, null, 2); },
+  alert(e){ const t={integrity:"Integrity · request declined", emergency:"EMERGENCY · 911 advised", crisis:"Crisis · 988 shared", identity:"Identity"}[e.kind]||"Alert";
+    alertBox(e.level==="emergency"?"emergency":"review", t, e.text, e.quote); },
+  hold(){ pill("On hold · waiting","live hold"); msg("sys","Caller put the line on hold"); },
+  handoff(e){ alertBox("info","Handed to a person", e.reason); done = true; pill("Handed off"); },
+  call_ended(){ timer(false); if(!["Booked","Handed off"].includes($("#pillText").textContent)) pill("Call ended"); },
+};
+new EventSource("/stream").onmessage = m => { const e = JSON.parse(m.data); on[e.type]?.(e); };
+</script>
+</body>
+</html>

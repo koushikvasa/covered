@@ -70,3 +70,15 @@ To investigate unexpected agent behavior:
 ## Other CLI commands
 
 Beyond documentation access, the LiveKit CLI (`lk`) handles tasks such as managing SIP trunks for telephony agents. Run `lk --help` to explore available commands.
+
+## This team's agent: Covered (read first)
+
+The team is building **Covered**, a health plan care line: a member calls and hangs up with a booked, in-network, really available, priced appointment. See `COVERED.md` (what and why), `TEAM.md` (who does what), and `scenarios-covered.yaml` (difficult callers).
+
+- `src/my_agent.py` is Covered (`AGENT_PROFILE=mine`). `src/covered_core.py` holds the rules and synthetic data. `src/baton_agent.py` + `src/baton_core.py` are a backup idea (`AGENT_PROFILE=baton`); leave them alone.
+- **The LLM talks; code decides.** Identity checks, plan rules, costs, search, booking and safety detection live in `covered_core.py` and the tools. Never move a rule into the prompt to "fix" behavior; fix the tool or its docstring.
+- Risky tools (`request_referral`, `book_appointment`) take `confirmed`; the tool returns a read-back until `confirmed=true`. Keep that pattern for any new action.
+- Keep replies to one short sentence and one question. Tool results tell the LLM the exact next step; keep them short and specific.
+- Board events go through `baton_board.emit()` (fire-and-forget to `board/server.py`). The call must never wait on the board.
+- Run `uv run pytest -q` (29 tests, no credits) before every commit, plus `uv run ruff format` and `uv run ruff check`.
+- All data is synthetic. Never add real member, patient or provider data.

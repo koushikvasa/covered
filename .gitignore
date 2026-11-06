@@ -31,3 +31,9 @@ KMS
 
 # GitHub CLI
 .github/personal-instructions.md
+
+# Baton visit store (demo data, regenerated from seed)
+data/
+
+# Covered / Baton local stores (regenerated)
+data/
